@@ -66,6 +66,8 @@ open "dist/macos/Codex Switch.app"
 
 ## 开发与验证
 
+应用图标的矢量源文件是 `assets/app-icon.svg`，PNG 和多尺寸 ICO 已随源码提供。修改后可安装 ImageMagick 并运行 `scripts/build-icons.ps1` 重新导出。Windows 将 ICO 嵌入程序并设置窗口图标；macOS 打包脚本使用系统工具生成 ICNS。
+
 ```powershell
 dotnet run --project tests/Core.Tests/Core.Tests.csproj -c Release
 ```

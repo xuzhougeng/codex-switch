@@ -15,6 +15,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.ico"));
         SystemBackdrop = new MicaBackdrop();
         AppWindow.Resize(new global::Windows.Graphics.SizeInt32(1040, 820));
         AppWindow.Changed += (_, e) =>

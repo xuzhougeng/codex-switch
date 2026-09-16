@@ -101,8 +101,7 @@ struct ContentView: View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 12) {
-                    Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(mint).frame(width: 40, height: 40).background(forest, in: RoundedRectangle(cornerRadius: 12))
+                    Image(nsImage: NSImage(named: NSImage.applicationIconName) ?? NSImage()).resizable().frame(width: 44, height: 44).accessibilityLabel("Codex Switch")
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Codex").font(.system(size: 20, weight: .semibold))
                         Text("Switch").font(.system(size: 13)).tracking(2).foregroundStyle(.secondary)

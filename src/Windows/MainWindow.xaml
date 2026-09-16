@@ -14,7 +14,7 @@
   <Grid x:Name="Rail" Padding="22,30,22,24" Background="{ThemeResource SidebarBrush}" BorderBrush="{ThemeResource LineBrush}" BorderThickness="0,0,1,0">
    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
    <StackPanel Orientation="Horizontal" Spacing="12">
-    <Border Width="40" Height="40" CornerRadius="12" Background="#246B53"><FontIcon Glyph="&#xE8AB;" FontSize="21" Foreground="#E4F4E9"/></Border>
+    <Image Width="44" Height="44" Source="ms-appx:///Assets/app-icon.png" AutomationProperties.Name="Codex Switch"/>
     <StackPanel x:Name="BrandWords" VerticalAlignment="Center"><TextBlock Text="Codex" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="Switch" FontSize="13" CharacterSpacing="140" Foreground="{ThemeResource MutedBrush}"/></StackPanel>
    </StackPanel>
    <StackPanel Grid.Row="1" Spacing="8" Margin="0,48,0,0">
