@@ -1,0 +1,39 @@
+name: Native builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and publish WinUI 3
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-switch-windows-x64
+          path: dist/windows-x64/
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test and package SwiftUI
+        run: bash scripts/build-macos.sh
+      - name: Archive app preserving permissions
+        run: ditto -c -k --sequesterRsrc --keepParent "dist/macos/Codex Switch.app" dist/macos/CodexSwitch-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-switch-macos
+          path: dist/macos/CodexSwitch-macOS.zip
