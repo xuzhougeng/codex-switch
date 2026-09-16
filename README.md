@@ -2,7 +2,7 @@
 
 本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**。原 PowerShell 命令行继续保留。
 
-原生版提供当前账号卡片、搜索、账号列表、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 使用 Mica 和原生对话框，macOS 使用侧栏、工具栏、原生确认框及 Command-R 快捷键。
+原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 
 ## Windows
 
@@ -38,7 +38,7 @@ open "dist/macos/Codex Switch.app"
 
 脚本先执行 Swift 测试，再生成当前 Mac 架构的 `.app` 并添加本地 ad-hoc 签名。对外分发仍需要 Developer ID 签名与 Apple 公证。开发时可在 Xcode 打开 `src/macOS/Package.swift`，或运行 `cd src/macOS && swift run`。
 
-**验证边界：macOS 源码、测试和打包脚本已提供；本次开发环境是 Windows，尚未在 Mac 上编译、验证界面或完成真实登录。**
+**验证边界：SwiftUI 已通过 GitHub Actions 的 macOS 15 编译、存储层测试和 `.app` 打包。尚未完成 Mac 界面实测和真实浏览器登录验证。** Windows 版已在本机启动并使用虚拟账号验证搜索与切换。
 
 ## 账号数据与行为
 
@@ -67,10 +67,12 @@ open "dist/macos/Codex Switch.app"
 ## 开发与验证
 
 ```powershell
- dotnet run --project tests/Core.Tests/Core.Tests.csproj -c Release
+dotnet run --project tests/Core.Tests/Core.Tests.csproj -c Release
 ```
 
 Windows 集成测试使用临时目录和虚拟凭据，覆盖切换、最新凭据保留、备份、损坏文件、身份冲突、路径校验、并发锁，以及模拟 CLI 成功/失败/取消。不会操作真实账号。
+
+[Native builds](https://github.com/xuzhougeng/codex-switch/actions/workflows/build.yml) 在每次推送时分别构建 Windows 和 macOS，并提供对应的下载产物。macOS 产物包含本地 ad-hoc 签名，不是已公证的发行版。
 
 隔离界面预览（目标目录必须尚不存在）：
 
