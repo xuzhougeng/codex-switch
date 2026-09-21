@@ -5,7 +5,7 @@
 
   <VisualStateManager.VisualStateGroups><VisualStateGroup>
    <VisualState x:Name="Compact"><VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="0"/></VisualState.StateTriggers><VisualState.Setters>
-    <Setter Target="RailColumn.Width" Value="76"/><Setter Target="BrandWords.Visibility" Value="Collapsed"/><Setter Target="NavLabel.Visibility" Value="Collapsed"/><Setter Target="HelpLabel.Visibility" Value="Collapsed"/><Setter Target="LocalWords.Visibility" Value="Collapsed"/><Setter Target="RailCaption.Visibility" Value="Collapsed"/>
+    <Setter Target="RailColumn.Width" Value="76"/><Setter Target="BrandWords.Visibility" Value="Collapsed"/><Setter Target="NavLabel.Visibility" Value="Collapsed"/><Setter Target="ProxyLabel.Visibility" Value="Collapsed"/><Setter Target="HelpLabel.Visibility" Value="Collapsed"/><Setter Target="LocalWords.Visibility" Value="Collapsed"/><Setter Target="RailCaption.Visibility" Value="Collapsed"/>
     <Setter Target="Rail.Padding" Value="14,28,14,22"/><Setter Target="MainPadding.Padding" Value="24,24,24,0"/>
    </VisualState.Setters></VisualState>
    <VisualState x:Name="Wide"><VisualState.StateTriggers><AdaptiveTrigger MinWindowWidth="940"/></VisualState.StateTriggers></VisualState>
@@ -22,6 +22,9 @@
     <Button x:Name="OverviewButton" Style="{StaticResource QuietButton}" Background="{ThemeResource TintBrush}" Foreground="{ThemeResource BrandBrush}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Click="Overview_Click" AutomationProperties.Name="账号总览">
      <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE716;" FontSize="17"/><TextBlock x:Name="NavLabel" Text="账号总览" FontWeight="SemiBold"/></StackPanel>
     </Button>
+    <Button x:Name="ProxyButton" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Foreground="{ThemeResource MutedBrush}" Click="Proxy_Click" AutomationProperties.Name="双跳代理">
+     <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE774;" FontSize="17"/><TextBlock x:Name="ProxyLabel" Text="双跳代理"/></StackPanel>
+    </Button>
     <Button x:Name="HelpButton" Style="{StaticResource QuietButton}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Foreground="{ThemeResource MutedBrush}" Click="Help_Click" AutomationProperties.Name="使用说明">
      <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE946;" FontSize="17"/><TextBlock x:Name="HelpLabel" Text="使用说明"/></StackPanel>
     </Button>
@@ -35,7 +38,7 @@
    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
    <Grid Margin="0,0,0,24" ColumnSpacing="12">
     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-    <StackPanel Spacing="5"><TextBlock Text="ACCOUNTS" FontSize="10" CharacterSpacing="220" Foreground="{ThemeResource MutedBrush}"/><TextBlock Text="账号总览" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="你的账号，一处管理。" FontSize="12" Foreground="{ThemeResource MutedBrush}"/></StackPanel>
+    <StackPanel Spacing="5"><TextBlock x:Name="PageKicker" Text="ACCOUNTS" FontSize="10" CharacterSpacing="220" Foreground="{ThemeResource MutedBrush}"/><TextBlock x:Name="PageTitle" Text="账号总览" FontSize="28" FontWeight="SemiBold"/><TextBlock x:Name="PageLede" Text="你的账号，一处管理。" FontSize="12" Foreground="{ThemeResource MutedBrush}"/></StackPanel>
     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
      <Button x:Name="RefreshButton" Style="{StaticResource QuietButton}" Click="Refresh_Click" AutomationProperties.Name="刷新账号" ToolTipService.ToolTip="刷新账号"><FontIcon Glyph="&#xE72C;" FontSize="16"/></Button>
      <Button x:Name="LoginButton" Style="{StaticResource PrimaryButton}" Click="Login_Click" AutomationProperties.Name="添加账号"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE710;" FontSize="13"/><TextBlock Text="添加账号" FontWeight="SemiBold"/></StackPanel></Button>
@@ -43,6 +46,7 @@
    </Grid>
    <ScrollViewer x:Name="ActionHost" Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" TabFocusNavigation="Local">
     <StackPanel x:Name="Actions" Spacing="28" Padding="0,0,2,24">
+     <StackPanel x:Name="AccountsPanel" Spacing="28">
      <Border CornerRadius="16" Background="#193F35" Padding="26,24">
       <Grid>
        <Grid Width="154" Height="154" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,-12,0" IsHitTestVisible="False" Opacity="0.25">
@@ -93,6 +97,46 @@
       </Border>
      </StackPanel>
      <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE946;" FontSize="12" Foreground="{ThemeResource MutedBrush}"/><TextBlock Text="切换后，重新打开 Codex 以应用新的登录。" FontSize="11" Foreground="{ThemeResource MutedBrush}" TextWrapping="Wrap"/></StackPanel>
+     </StackPanel>
+     <StackPanel x:Name="ProxyPanel" Spacing="16" Visibility="Collapsed">
+      <Border CornerRadius="16" Background="{ThemeResource SurfaceBrush}" BorderBrush="{ThemeResource LineBrush}" BorderThickness="1" Padding="22,20">
+       <Grid ColumnSpacing="12">
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel Spacing="6">
+         <TextBlock Text="状态" FontSize="11" Foreground="{ThemeResource MutedBrush}"/>
+         <TextBlock x:Name="ProxyStatus" Text="未运行" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+         <TextBlock Text="Codex 走 http://127.0.0.1:1990。先保存配置再启动。" FontSize="11" Foreground="{ThemeResource MutedBrush}" TextWrapping="Wrap"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+         <Button x:Name="ProxyStartButton" Style="{StaticResource PrimaryButton}" Click="ProxyStart_Click" AutomationProperties.Name="启动双跳代理"><TextBlock Text="启动" FontWeight="SemiBold"/></Button>
+         <Button x:Name="ProxyStopButton" Style="{StaticResource QuietButton}" Click="ProxyStop_Click" AutomationProperties.Name="停止双跳代理"><TextBlock Text="停止"/></Button>
+        </StackPanel>
+       </Grid>
+      </Border>
+      <Border CornerRadius="12" Background="{ThemeResource SurfaceBrush}" BorderBrush="{ThemeResource LineBrush}" BorderThickness="1" Padding="18">
+       <StackPanel Spacing="12">
+        <TextBlock Text="第一跳 · 中转节点 YAML" FontSize="13" FontWeight="SemiBold"/>
+        <TextBox x:Name="ProxyRelayYaml" MinHeight="160" AcceptsReturn="True" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12" PlaceholderText="粘贴中转节点，每条以 - name: 开头"/>
+       </StackPanel>
+      </Border>
+      <Border CornerRadius="12" Background="{ThemeResource SurfaceBrush}" BorderBrush="{ThemeResource LineBrush}" BorderThickness="1" Padding="18">
+       <StackPanel Spacing="12">
+        <TextBlock Text="第二跳 · 美国家宽 SOCKS5" FontSize="13" FontWeight="SemiBold"/>
+        <Grid ColumnSpacing="10" RowSpacing="10">
+         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions>
+         <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
+         <TextBox x:Name="ProxyHomeServer" PlaceholderText="地址" AutomationProperties.Name="家宽地址"/>
+         <TextBox Grid.Column="1" x:Name="ProxyHomePort" PlaceholderText="端口" AutomationProperties.Name="家宽端口"/>
+         <TextBox Grid.Row="1" x:Name="ProxyHomeUser" PlaceholderText="用户名（可选）" AutomationProperties.Name="家宽用户名"/>
+         <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="ProxyHomePassword" PlaceholderText="密码" AutomationProperties.Name="家宽密码"/>
+         <TextBox Grid.Row="2" x:Name="ProxyMaxConcurrent" PlaceholderText="同时最多" AutomationProperties.Name="限流并发"/>
+         <TextBox Grid.Row="2" Grid.Column="1" x:Name="ProxyDialInterval" PlaceholderText="间隔毫秒" AutomationProperties.Name="限流间隔"/>
+        </Grid>
+        <TextBox x:Name="ProxyMihomoPath" PlaceholderText="mihomo 路径（可留空，使用 PATH）" AutomationProperties.Name="mihomo 路径"/>
+        <Button Style="{StaticResource QuietButton}" HorizontalAlignment="Left" Click="ProxySave_Click" AutomationProperties.Name="保存双跳配置"><TextBlock Text="保存配置"/></Button>
+       </StackPanel>
+      </Border>
+     </StackPanel>
     </StackPanel>
    </ScrollViewer>
    <Grid Grid.Row="2" Padding="0,13,0,14" BorderBrush="{ThemeResource LineBrush}" BorderThickness="0,1,0,0" ColumnSpacing="9">

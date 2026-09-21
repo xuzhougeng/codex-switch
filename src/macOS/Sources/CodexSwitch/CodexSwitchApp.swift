@@ -42,8 +42,15 @@ final class AccountModel: ObservableObject {
     @Published var busy = false
     @Published var loggingIn = false
     @Published var search = ""
+    @Published var page: Page = .accounts
+    @Published var proxy = ClashProxySettings()
+    @Published var proxyStatus = "未运行"
     let store = AccountStore()
+    let clashStore = ClashProxyStore()
+    let clashRuntime: ClashProxyRuntime
     private var operation: Task<Void, Never>?
+    enum Page { case accounts, proxy, help }
+    init() { clashRuntime = ClashProxyRuntime(store: clashStore) }
 
     var filtered: [Account] {
         accounts.filter { search.isEmpty || ($0.email + " " + $0.plan).localizedCaseInsensitiveContains(search) }
@@ -80,6 +87,33 @@ final class AccountModel: ObservableObject {
     }
     func cancel() { operation?.cancel() }
     func finishBeforeQuit() async { operation?.cancel(); await operation?.value }
+    func loadProxy() {
+        Task {
+            do {
+                proxy = try await clashStore.load()
+                proxyStatus = try await clashRuntime.status().detail
+            } catch { status = "读取双跳配置失败：" + error.localizedDescription }
+        }
+    }
+    func saveProxy() {
+        perform("双跳配置已保存") { [self] in
+            try await clashStore.save(proxy)
+            _ = try await clashStore.materialize(proxy)
+            proxyStatus = try await clashRuntime.status().detail
+        }
+    }
+    func startProxy() {
+        perform("双跳代理已启动。Codex 使用 http://127.0.0.1:1990") { [self] in
+            let result = try await clashRuntime.start(proxy)
+            proxyStatus = result.detail
+        }
+    }
+    func stopProxy() {
+        perform("双跳代理已停止") { [self] in
+            try await clashRuntime.stop()
+            proxyStatus = try await clashRuntime.status().detail
+        }
+    }
 }
 
 @MainActor
@@ -108,8 +142,12 @@ struct ContentView: View {
                     }
                 }.padding(.bottom, 44)
                 Text("工作空间").font(.system(size: 11)).foregroundStyle(.secondary).padding(.leading, 10).padding(.bottom, 12)
-                navigationButton("账号总览", icon: "person.2", selected: !showHelp) { showHelp = false }
-                navigationButton("使用说明", icon: "info.circle", selected: showHelp) { showHelp = true }.padding(.top, 6)
+                navigationButton("账号总览", icon: "person.2", selected: model.page == .accounts) { model.page = .accounts }
+                navigationButton("双跳代理", icon: "network", selected: model.page == .proxy) {
+                    model.page = .proxy
+                    model.loadProxy()
+                }.padding(.top, 6)
+                navigationButton("使用说明", icon: "info.circle", selected: model.page == .help) { model.page = .help }.padding(.top, 6)
                 Spacer()
                 HStack(alignment: .top, spacing: 10) {
                     Circle().fill(accent).frame(width: 6, height: 6).padding(.top, 5)
@@ -125,18 +163,20 @@ struct ContentView: View {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("ACCOUNTS").font(.system(size: 10, weight: .medium)).tracking(2.2).foregroundStyle(.secondary)
-                        Text(showHelp ? "使用说明" : "账号总览").font(.system(size: 28, weight: .semibold))
-                        Text("你的账号，一处管理。").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(model.page == .help ? "使用说明" : model.page == .proxy ? "双跳代理" : "账号总览").font(.system(size: 28, weight: .semibold))
+                        Text(model.page == .proxy ? "中转 + 美国家宽，带本机限流。" : "你的账号，一处管理。").font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button { model.perform("账号已刷新") { } } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                         .buttonStyle(.borderless).help("刷新账号")
-                    Button { model.login() } label: { Label("添加账号", systemImage: "plus").font(.system(size: 12, weight: .semibold)).padding(.horizontal, 5).padding(.vertical, 5) }
-                        .buttonStyle(.borderedProminent).tint(Color(red: 0.14, green: 0.42, blue: 0.325))
+                    if model.page == .accounts {
+                        Button { model.login() } label: { Label("添加账号", systemImage: "plus").font(.system(size: 12, weight: .semibold)).padding(.horizontal, 5).padding(.vertical, 5) }
+                            .buttonStyle(.borderedProminent).tint(Color(red: 0.14, green: 0.42, blue: 0.325))
+                    }
                 }.padding(.bottom, 26).disabled(model.busy)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
-                        if showHelp { help } else { accountContent }
+                        if model.page == .help { help } else if model.page == .proxy { proxyContent } else { accountContent }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 24)
                 }.disabled(model.busy)
                 HStack(spacing: 9) {
@@ -267,11 +307,51 @@ struct ContentView: View {
         }.padding(.horizontal, 18).padding(.vertical, 16)
     }
 
+    private var proxyContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("状态").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(model.proxyStatus).font(.system(size: 16, weight: .semibold))
+                    Text("Codex 走 http://127.0.0.1:1990。先保存配置再启动。").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("启动") { model.startProxy() }.buttonStyle(.borderedProminent).tint(Color(red: 0.14, green: 0.42, blue: 0.325))
+                Button("停止") { model.stopProxy() }
+            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+                .background(surface, in: RoundedRectangle(cornerRadius: 16))
+            VStack(alignment: .leading, spacing: 10) {
+                Text("第一跳 · 中转节点 YAML").font(.system(size: 13, weight: .semibold))
+                TextEditor(text: $model.proxy.relayYaml).font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 150).padding(8)
+                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(line, lineWidth: 1) }
+            }.padding(18).background(surface, in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 10) {
+                Text("第二跳 · 美国家宽 SOCKS5").font(.system(size: 13, weight: .semibold))
+                HStack {
+                    TextField("地址", text: $model.proxy.homeServer)
+                    TextField("端口", text: $model.proxy.homePort).frame(width: 90)
+                }
+                HStack {
+                    TextField("用户名（可选）", text: $model.proxy.homeUsername)
+                    SecureField("密码", text: $model.proxy.homePassword)
+                }
+                HStack {
+                    TextField("同时最多", value: $model.proxy.maxConcurrent, format: .number)
+                    TextField("间隔毫秒", value: $model.proxy.dialIntervalMs, format: .number)
+                }
+                TextField("mihomo 路径（可留空）", text: $model.proxy.mihomoPath)
+                Button("保存配置") { model.saveProxy() }
+            }.textFieldStyle(.roundedBorder).padding(18).background(surface, in: RoundedRectangle(cornerRadius: 12))
+        }
+    }
+
     private var help: some View {
         VStack(alignment: .leading, spacing: 24) {
             Text("轻松切换，妥善保存。").font(.system(size: 22, weight: .semibold))
             Text("登录新账号会通过 Codex CLI 打开浏览器。成功后自动保存；取消或超时会保留原账号。")
             Text("切换会先保存并备份当前登录。使用 Command-Q 完全退出 Codex 后重新打开，以加载新的登录。")
+            Text("双跳代理会启动 mihomo 和本机限流。Codex 走 http://127.0.0.1:1990，请自行设置 http_proxy。")
             Text("本工具管理文件登录，不会自动改写 macOS 钥匙串。使用系统凭据存储时，需要先确认 Codex 配置为文件存储。")
             Text("本地快照和备份包含登录凭据，请勿分享或上传。额度尚未核验，本地会话记录不作为实时额度展示。")
             Text(model.store.directory.path).font(.caption.monospaced()).textSelection(.enabled).foregroundStyle(.secondary)

@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [.executable(name: "CodexSwitch", targets: ["CodexSwitch"])],
     targets: [
-        .target(name: "CodexSwitchCore"),
+        .target(name: "CodexSwitchCore", resources: [.copy("Resources/socks-limiter.py")]),
         .executableTarget(name: "CodexSwitch", dependencies: ["CodexSwitchCore"]),
         .testTarget(name: "CodexSwitchCoreTests", dependencies: ["CodexSwitchCore"])
     ]

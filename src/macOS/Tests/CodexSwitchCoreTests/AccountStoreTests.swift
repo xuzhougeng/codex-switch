@@ -42,4 +42,28 @@ final class AccountStoreTests: XCTestCase {
         let permissions = try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent("auth.json").path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(permissions?.intValue, 0o600)
     }
+    func testDialerProxyBuilderWritesLocalLimiter() throws {
+        let files = try DialerProxyBuilder.build(DialerProxyInput(
+            relayYaml: "  - name: \"relay-hk-01\"\n    type: ss\n    server: r.example\n    port: 443\n",
+            homeServer: "38.121.23.194", homePort: "33225", homeUsername: "u", homePassword: "secret"))
+        XCTAssertTrue(files.yaml.contains("server: 127.0.0.1"))
+        XCTAssertTrue(files.yaml.contains("IP-CIDR,38.121.23.194/32,relay-group,no-resolve"))
+        XCTAssertFalse(files.yaml.contains("secret"))
+        XCTAssertTrue(files.limiterJSON.contains("38.121.23.194:33225"))
+    }
+    func testClashProxyStoreRoundTrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ClashProxyStore(home: root)
+        var settings = ClashProxySettings()
+        settings.relayYaml = "  - name: relay-hk-01\n    type: ss\n    server: r.example\n    port: 1\n"
+        settings.homeServer = "home.example.com"
+        settings.homePort = "1080"
+        try await store.save(settings)
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.homeServer, "home.example.com")
+        _ = try await store.materialize(loaded)
+        let yaml = try String(contentsOf: store.yamlURL, encoding: .utf8)
+        XCTAssertTrue(yaml.contains("DOMAIN,home.example.com,relay-group"))
+    }
 }

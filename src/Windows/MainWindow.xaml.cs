@@ -1,4 +1,5 @@
 using CodexSwitch.Core;
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
@@ -8,12 +9,16 @@ namespace CodexSwitch.Windows;
 public sealed partial class MainWindow : Window
 {
     private readonly AccountStore store = new();
+    private readonly ClashProxyStore clashStore = new();
+    private readonly ClashProxyRuntime clashRuntime;
     private IReadOnlyList<Account> accounts = [];
     private CancellationTokenSource? login;
     private bool busy;
     private bool closed;
+    private string page = "accounts";
     public MainWindow()
     {
+        clashRuntime = new ClashProxyRuntime(clashStore);
         InitializeComponent();
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.ico"));
         SystemBackdrop = new MicaBackdrop();
@@ -62,7 +67,7 @@ public sealed partial class MainWindow : Window
         if (busy) return;
         busy = true;
         Actions.IsHitTestVisible = false;
-        ActionHost.IsEnabled = RefreshButton.IsEnabled = LoginButton.IsEnabled = HelpButton.IsEnabled = false;
+        ActionHost.IsEnabled = RefreshButton.IsEnabled = LoginButton.IsEnabled = HelpButton.IsEnabled = ProxyButton.IsEnabled = OverviewButton.IsEnabled = false;
         BusyRing.Visibility = Visibility.Visible;
         BusyRing.IsActive = true;
         Status.Text = "正在处理…";
@@ -75,7 +80,7 @@ public sealed partial class MainWindow : Window
             if (!closed)
             {
                 Actions.IsHitTestVisible = true;
-                ActionHost.IsEnabled = RefreshButton.IsEnabled = LoginButton.IsEnabled = HelpButton.IsEnabled = true;
+                ActionHost.IsEnabled = RefreshButton.IsEnabled = LoginButton.IsEnabled = HelpButton.IsEnabled = ProxyButton.IsEnabled = OverviewButton.IsEnabled = true;
                 BusyRing.IsActive = false;
                 BusyRing.Visibility = CancelButton.Visibility = Visibility.Collapsed;
             }
@@ -123,14 +128,79 @@ public sealed partial class MainWindow : Window
         login = null;
     }
     private void Cancel_Click(object sender, RoutedEventArgs e) => login?.Cancel();
-    private void Overview_Click(object sender, RoutedEventArgs e) => ActionHost.ChangeView(null, 0, null);
+    private void Overview_Click(object sender, RoutedEventArgs e) => ShowPage("accounts");
+    private void Proxy_Click(object sender, RoutedEventArgs e) => ShowPage("proxy");
+    private void ShowPage(string next)
+    {
+        page = next;
+        var accounts = next == "accounts";
+        AccountsPanel.Visibility = accounts ? Visibility.Visible : Visibility.Collapsed;
+        ProxyPanel.Visibility = accounts ? Visibility.Collapsed : Visibility.Visible;
+        LoginButton.Visibility = accounts ? Visibility.Visible : Visibility.Collapsed;
+        RefreshButton.Visibility = accounts ? Visibility.Visible : Visibility.Collapsed;
+        PageKicker.Text = accounts ? "ACCOUNTS" : "PROXY";
+        PageTitle.Text = accounts ? "账号总览" : "双跳代理";
+        PageLede.Text = accounts ? "你的账号，一处管理。" : "中转 + 美国家宽，带本机限流。";
+        PaintNav(OverviewButton, NavLabel, accounts);
+        PaintNav(ProxyButton, ProxyLabel, !accounts);
+        if (!accounts) LoadProxyForm();
+        ActionHost.ChangeView(null, 0, null);
+    }
+    private void PaintNav(Button button, TextBlock label, bool selected)
+    {
+        Brush BrushOf(string key, Brush fallback) =>
+            Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush ? brush : fallback;
+        button.Background = selected ? BrushOf("TintBrush", new SolidColorBrush(Colors.Transparent)) : new SolidColorBrush(Colors.Transparent);
+        button.Foreground = selected ? BrushOf("BrandBrush", new SolidColorBrush(Colors.ForestGreen)) : BrushOf("MutedBrush", new SolidColorBrush(Colors.Gray));
+        label.FontWeight = selected ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
+    }
+    private void LoadProxyForm()
+    {
+        var settings = clashStore.Load();
+        ProxyRelayYaml.Text = settings.RelayYaml;
+        ProxyHomeServer.Text = settings.HomeServer;
+        ProxyHomePort.Text = settings.HomePort;
+        ProxyHomeUser.Text = settings.HomeUsername;
+        ProxyHomePassword.Password = settings.HomePassword;
+        ProxyMaxConcurrent.Text = settings.MaxConcurrent.ToString();
+        ProxyDialInterval.Text = settings.DialIntervalMs.ToString();
+        ProxyMihomoPath.Text = settings.MihomoPath;
+        ProxyStatus.Text = clashRuntime.Status().Detail;
+    }
+    private ClashProxySettings ReadProxyForm()
+    {
+        var settings = clashStore.Load();
+        settings.RelayYaml = ProxyRelayYaml.Text ?? "";
+        settings.HomeServer = ProxyHomeServer.Text?.Trim() ?? "";
+        settings.HomePort = string.IsNullOrWhiteSpace(ProxyHomePort.Text) ? "1080" : ProxyHomePort.Text.Trim();
+        settings.HomeUsername = ProxyHomeUser.Text?.Trim() ?? "";
+        settings.HomePassword = ProxyHomePassword.Password ?? "";
+        settings.MihomoPath = ProxyMihomoPath.Text?.Trim() ?? "";
+        if (int.TryParse(ProxyMaxConcurrent.Text, out var max) && max > 0) settings.MaxConcurrent = max;
+        if (int.TryParse(ProxyDialInterval.Text, out var interval) && interval >= 0) settings.DialIntervalMs = interval;
+        return settings;
+    }
+    private async void ProxySave_Click(object sender, RoutedEventArgs e) =>
+        await Run(() => Task.Run(() => { clashStore.Save(ReadProxyForm()); clashStore.Materialize(clashStore.Load()); }), "双跳配置已保存");
+    private async void ProxyStart_Click(object sender, RoutedEventArgs e) =>
+        await Run(async () =>
+        {
+            var status = await Task.Run(() => clashRuntime.Start(ReadProxyForm()));
+            ProxyStatus.Text = status.Detail;
+        }, "双跳代理已启动。Codex 使用 http://127.0.0.1:1990");
+    private async void ProxyStop_Click(object sender, RoutedEventArgs e) =>
+        await Run(async () =>
+        {
+            await Task.Run(clashRuntime.Stop);
+            ProxyStatus.Text = clashRuntime.Status().Detail;
+        }, "双跳代理已停止");
     private async void Help_Click(object sender, RoutedEventArgs e)
     {
         if (busy) return;
         await new ContentDialog
         {
             XamlRoot = Root.XamlRoot, Title = "使用说明", CloseButtonText = "知道了",
-            Content = new TextBlock { Text = "登录新账号会打开浏览器，成功后自动保存；取消时保留原登录。\n\n切换后，请完全退出并重新打开 Codex。\n\n登录和备份仅保存在本机，包含敏感凭据，请勿分享。\n\n额度暂未核验：本地会话记录无法可靠归属到当前账号。", TextWrapping = TextWrapping.Wrap }
+            Content = new TextBlock { Text = "登录新账号会打开浏览器，成功后自动保存；取消时保留原登录。\n\n切换后，请完全退出并重新打开 Codex。\n\n双跳代理会启动 mihomo 和本机限流，Codex 走 http://127.0.0.1:1990。\n\n登录和备份仅保存在本机，包含敏感凭据，请勿分享。\n\n额度暂未核验：本地会话记录无法可靠归属到当前账号。", TextWrapping = TextWrapping.Wrap }
         }.ShowAsync();
     }
 }

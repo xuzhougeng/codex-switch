@@ -106,6 +106,70 @@ try
         }
         finally { Environment.SetEnvironmentVariable("PATH", oldPath); Environment.SetEnvironmentVariable("CODEX_SWITCH_TEST_AUTH", oldFixture); }
     }
+    var relay = """
+          - name: "relay-hk-01"
+            type: ss
+            server: relay1.example.com
+            port: 443
+        """;
+    var built = DialerProxyBuilder.Build(new DialerProxyInput(relay, "38.121.23.194", "33225", "user", "secret"));
+    Check(built.Yaml.Contains("server: 127.0.0.1"), "generated yaml points at local limiter");
+    Check(built.Yaml.Contains("port: 1994"), "generated yaml uses limiter port");
+    Check(!built.Yaml.Contains("secret"), "home password stays out of clash yaml");
+    Check(built.Yaml.Contains("IP-CIDR,38.121.23.194/32,relay-group,no-resolve"), "home IP uses first hop to avoid a loop");
+    Check(built.Yaml.Contains("DOMAIN-SUFFIX,openai.com,target-socks5"), "openai goes through the limiter target");
+    Check(built.Yaml.Contains("DOMAIN,api.github.com,relay-group"), "github bypasses residential SOCKS");
+    Check(built.LimiterJson.Contains("\"upstream\": \"38.121.23.194:33225\""), "limiter json keeps home SOCKS");
+    Check(built.LimiterPython.Contains("max_concurrent"), "embedded limiter script is present");
+    Reject(() => DialerProxyBuilder.Build(new DialerProxyInput("", "1.2.3.4", "1", "", "")), "empty relay rejected");
+
+    var clashHome = Path.Combine(root, "clash-home");
+    var clashStore = new ClashProxyStore(clashHome);
+    var pythonStub = Path.Combine(root, OperatingSystem.IsWindows() ? "python.exe" : "python3");
+    var mihomoStub = Path.Combine(root, OperatingSystem.IsWindows() ? "mihomo.exe" : "mihomo");
+    File.WriteAllText(pythonStub, "");
+    File.WriteAllText(mihomoStub, "");
+    var settings = new ClashProxySettings
+    {
+        RelayYaml = relay, HomeServer = "home.example.com", HomePort = "1080", HomePassword = "pw",
+        PythonPath = pythonStub, MihomoPath = mihomoStub
+    };
+    clashStore.Save(settings);
+    var loaded = clashStore.Load();
+    Check(loaded.HomeServer == "home.example.com" && loaded.HomePassword == "pw", "clash settings round-trip");
+    clashStore.Materialize(loaded);
+    Check(File.ReadAllText(clashStore.YamlPath).Contains("DOMAIN,home.example.com,relay-group"), "hostname loop-avoidance");
+    Check(File.Exists(clashStore.LimiterPythonPath), "limiter script written next to yaml");
+
+    var fake = new FakeProcessHost();
+    var runtime = new ClashProxyRuntime(clashStore, fake) { RequireListen = false };
+    var started = runtime.Start(settings);
+    Check(started.Running, "runtime reports running when both ports listen");
+    Check(fake.Starts.Count == 2, "runtime starts limiter then mihomo");
+    Check(fake.Starts[0].File.Contains("python"), "first process is python limiter");
+    Check(fake.Starts[1].Args.Contains("-f"), "second process is mihomo -f");
+    runtime.Stop();
+    Check(fake.Stopped.Count == 2, "stop kills limiter and mihomo");
+
     Console.WriteLine("All core integration checks passed. Only synthetic credentials were used.");
 }
 finally { Directory.Delete(root, true); }
+
+sealed class FakeProcessHost : IProcessHost
+{
+    public int NextPid = 1000;
+    public List<(string File, string Args)> Starts { get; } = [];
+    public List<int> Stopped { get; } = [];
+    public HashSet<int> Alive { get; } = [];
+    public HashSet<string> Listening { get; } = new(StringComparer.Ordinal);
+    public int StartDetached(string fileName, IReadOnlyList<string> arguments, string workDirectory, string logPath)
+    {
+        var pid = NextPid++;
+        Alive.Add(pid);
+        Starts.Add((fileName, string.Join(' ', arguments)));
+        return pid;
+    }
+    public void Stop(int pid) { Alive.Remove(pid); Stopped.Add(pid); }
+    public bool IsRunning(int pid) => Alive.Contains(pid);
+    public bool IsListening(string host, int port) => Listening.Contains(host + ":" + port);
+}
