@@ -2,14 +2,14 @@
 
 本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**，Linux 使用终端界面管理 mihomo。原 PowerShell 命令行继续保留。
 
-当前版本 **0.1.0**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.1.0)
+当前版本 **0.2.0**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.2.0)
 
 | 包 | 平台 |
 | --- | --- |
-| `CodexSwitch-0.1.0-windows-x64.zip` | Windows x64 |
-| `CodexSwitch-0.1.0-macos-arm64.zip` | macOS Apple Silicon |
-| `CodexSwitch-0.1.0-linux-x64.tar.gz` | Linux x64，含 mihomo |
-| `CodexSwitch-0.1.0-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
+| `CodexSwitch-0.2.0-windows-x64.zip` | Windows x64 |
+| `CodexSwitch-0.2.0-macos-arm64.zip` | macOS Apple Silicon |
+| `CodexSwitch-0.2.0-linux-x64.tar.gz` | Linux x64，含 mihomo |
+| `CodexSwitch-0.2.0-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
 
 原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 
@@ -64,7 +64,11 @@ export http_proxy=http://127.0.0.1:1990
 export https_proxy=http://127.0.0.1:1990
 ```
 
-配置仍在 `~/.codex/codex-switch/clash-proxy.json`。mihomo 只读运行时写出的 `clash/ai.yaml`。退出菜单后服务继续运行；`codex-switch stop` 或菜单里的停止会关掉它。开机启动写的是 `~/.config/systemd/user/codex-mihomo.service`。
+`codex-switch shell`（菜单里的 Shell 命令）把这两行包成 `~/.local/bin/function.sh` 的 `claude` 和 `codex` 函数，并在 `.zshrc` / `.bashrc` 里加一行 source，端口从运行中的服务读。
+
+节点走订阅：菜单里填订阅 URL，刷新后测延迟并选一个，被选中的节点就是一跳的首选。
+
+配置和运行文件在 `~/.config/codex-switch/`（`clash-proxy.json` 和 `clash/ai.yaml`），不写进 `~/.codex`。已经存在的旧目录会在第一次启动时复制过去。退出菜单后服务继续运行；`codex-switch stop` 或菜单里的停止会关掉它。开机启动写的是 `~/.config/systemd/user/codex-mihomo.service`。
 
 ## macOS
 

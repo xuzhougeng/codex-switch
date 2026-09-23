@@ -10,6 +10,8 @@ public sealed class ClashProxySettings
     public string LimiterListen { get; set; } = "127.0.0.1:1994";
     public string RelayGroup { get; set; } = "relay-group";
     public string TargetName { get; set; } = "target-socks5";
+    public string SubscriptionUrl { get; set; } = "";
+    public string SelectedRelay { get; set; } = "";
     public string RelayYaml { get; set; } = "";
     public string HomeServer { get; set; } = "";
     public string HomePort { get; set; } = "1080";
@@ -42,6 +44,39 @@ public sealed class ClashProxyStore
     public ClashProxyStore(string? home = null) => Home = Path.GetFullPath(home ??
         Environment.GetEnvironmentVariable("CODEX_HOME") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex"));
+
+    public static ClashProxyStore CreateLinux()
+    {
+        var configHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        if (string.IsNullOrWhiteSpace(configHome))
+            configHome = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config");
+        var store = new ClashProxyStore(configHome);
+        MigrateLinuxStore(store.StoreDirectory);
+        return store;
+    }
+
+    private static void MigrateLinuxStore(string destination)
+    {
+        if (File.Exists(Path.Combine(destination, "clash-proxy.json"))) return;
+        var legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "codex-switch");
+        if (!Directory.Exists(legacy)) return;
+        CopyTree(legacy, destination);
+    }
+
+    private static void CopyTree(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.GetFiles(source))
+        {
+            var target = Path.Combine(destination, Path.GetFileName(file));
+            if (!File.Exists(target)) File.Copy(file, target);
+        }
+        foreach (var dir in Directory.GetDirectories(source))
+        {
+            var target = Path.Combine(destination, Path.GetFileName(dir));
+            if (!Directory.Exists(target)) CopyTree(dir, target);
+        }
+    }
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -111,7 +146,8 @@ public sealed class ClashProxyStore
         1,
         settings.DialIntervalMs,
         settings.QueueWaitS,
-        allowLan);
+        allowLan,
+        settings.SelectedRelay);
 
     private static void Write(string path, string text)
     {

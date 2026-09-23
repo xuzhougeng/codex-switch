@@ -23,6 +23,21 @@ static class ClashApi
         return (now, all);
     }
 
+    public static async Task<int> DelayAsync(string controller, string name, int timeoutMs, CancellationToken cancellationToken)
+    {
+        var test = Uri.EscapeDataString("http://www.gstatic.com/generate_204");
+        var path = "/proxies/" + Uri.EscapeDataString(name) + "/delay?timeout=" + timeoutMs.ToString() + "&url=" + test;
+        try
+        {
+            using var doc = await GetAsync(controller, path, cancellationToken);
+            return doc.RootElement.TryGetProperty("delay", out var delay) && delay.TryGetInt32(out var ms) ? ms : -1;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException)
+        {
+            return -1;
+        }
+    }
+
     public static async Task SelectAsync(string controller, string group, string name, CancellationToken cancellationToken)
     {
         using var http = Client();

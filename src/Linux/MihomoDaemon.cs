@@ -23,7 +23,8 @@ static class MihomoDaemon
         using var term = PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => cts.Cancel());
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, _ => cts.Cancel());
         using var hup = detach ? PosixSignalRegistration.Create(PosixSignal.SIGHUP, ctx => ctx.Cancel = true) : null;
-        var store = new ClashProxyStore(Option(args, "--home"));
+        var home = Option(args, "--home");
+        var store = string.IsNullOrWhiteSpace(home) ? ClashProxyStore.CreateLinux() : new ClashProxyStore(home);
         var settings = store.Load();
         var service = new MihomoService(store) { AllowLan = false };
         try

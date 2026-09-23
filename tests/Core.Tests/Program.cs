@@ -123,6 +123,12 @@ try
     Check(!built.Yaml.Contains("bind-address:"), "desktop yaml does not pin the bind address");
     var plain = DialerProxyBuilder.Build(new DialerProxyInput("- name: relay-plain\n  type: ss\n  server: example.com\n  port: 443\n", "1.2.3.4", "1080", "", "")).Yaml.Replace("\r\n", "\n");
     Check(plain.Contains("\n  - name: relay-plain\n    type: ss\n"), "an unindented relay list is nested under proxies");
+    var picked = DialerProxyBuilder.Build(new DialerProxyInput("- name: one\n  type: ss\n- name: two\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "two")).Yaml.Replace("\r\n", "\n");
+    Check(picked.Contains("proxies:\n      - two\n      - one\n"), "the node chosen from a subscription is the default first hop");
+    var unicode = DialerProxyBuilder.ExtractRelayNames("- name: 🇦🇺 AU1 澳大利亚\n  type: ss\n- name: \"🇺🇸 US 01\"\n  type: ss\n");
+    Check(unicode.Count == 2 && unicode[0] == "🇦🇺 AU1 澳大利亚" && unicode[1] == "🇺🇸 US 01", "relay names keep the full UTF-8 label");
+    var aligned = DialerProxyBuilder.Build(new DialerProxyInput("  - name: 🇦🇺 AU1 澳大利亚\n    type: http\n    server: example.com\n    port: 1\n", "203.0.113.10", "1080", "", "")).Yaml.Replace("\r\n", "\n");
+    Check(aligned.Contains("  - name: 🇦🇺 AU1 澳大利亚\n    type: http\n"), "subscription proxy keys stay on the same indent");
     Check(built.LimiterJson.Contains("\"upstream\": \"38.121.23.194:33225\""), "limiter json keeps home SOCKS");
     Check(built.LimiterPython.Contains("max_concurrent"), "embedded limiter script is present");
     Reject(() => DialerProxyBuilder.Build(new DialerProxyInput("", "1.2.3.4", "1", "", "")), "empty relay rejected");
@@ -181,6 +187,9 @@ try
     var extracted = RelayImport.ExtractProxies("mixed: true\nproxies:\n  - name: relay-a\n    type: ss\nproxy-groups:\n  - name: g\n");
     Check(extracted.Contains("name: relay-a") && !extracted.Contains("proxy-groups"), "subscription import keeps the proxy list");
     Check(RelayImport.ExtractProxies("# comment\n- name: relay-b\n  type: ss").Contains("name: relay-b"), "a bare proxy list is accepted");
+    Check(SocksEndpoint.TryParse("socks5://user:p%40ss@203.0.113.10:1080", out var socks) && socks.Host == "203.0.113.10" && socks.Port == "1080" && socks.Username == "user" && socks.Password == "p@ss", "socks url splits host, port, and account");
+    Check(SocksEndpoint.TryParse("203.0.113.10", out var hostOnly) && hostOnly.Host == "203.0.113.10" && hostOnly.Port == null, "a bare residential host stays a host");
+    Check(!SocksEndpoint.TryParse("中山路 1 号", out _), "a street address is not a socks endpoint");
     Reject(() => RelayImport.ExtractProxies("rules:\n  - MATCH,DIRECT\n"), "subscription without proxies is rejected");
 
     var kernelDir = Path.Combine(root, "kernel-app");

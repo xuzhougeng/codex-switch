@@ -20,13 +20,14 @@ public sealed record DialerProxyInput(
     int MaxInflightDials = 1,
     int DialIntervalMs = 250,
     int QueueWaitS = 8,
-    bool AllowLan = true);
+    bool AllowLan = true,
+    string SelectedRelay = "");
 
 public sealed record DialerProxyFiles(string Yaml, string LimiterJson, string LimiterPython);
 
 public static class DialerProxyBuilder
 {
-    private static readonly Regex RelayName = new(@"^\s*-\s*name:\s*[""']?([^""'\s#]+)", RegexOptions.Multiline);
+    private static readonly Regex RelayName = new(@"^\s*-\s*name:\s*(.+?)\s*$", RegexOptions.Multiline);
     private static readonly Regex IPv4 = new(@"^(?:\d{1,3}\.){3}\d{1,3}$");
 
     public static IReadOnlyList<string> ExtractRelayNames(string relayYaml)
@@ -35,29 +36,50 @@ public static class DialerProxyBuilder
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (Match match in RelayName.Matches(relayYaml ?? ""))
         {
-            var name = match.Groups[1].Value.Trim();
+            var name = CleanRelayName(match.Groups[1].Value);
             if (name.Length == 0 || !seen.Add(name)) continue;
             names.Add(name);
         }
         return names;
     }
 
+    public static string CleanRelayName(string raw)
+    {
+        var text = (raw ?? "").Trim().TrimEnd('\r');
+        if (text.Length >= 2 && (text[0] == '"' || text[0] == '\''))
+        {
+            var end = text.LastIndexOf(text[0]);
+            if (end > 0) text = text[1..end];
+        }
+        var hash = text.IndexOf(" #", StringComparison.Ordinal);
+        if (hash >= 0) text = text[..hash];
+        return text.Trim();
+    }
+
     public static string NormalizeRelayYaml(string relayYaml)
     {
-        var text = (relayYaml ?? "").Replace("\r\n", "\n").Trim();
-        if (text.StartsWith("proxies:", StringComparison.Ordinal))
+        var text = (relayYaml ?? "").Replace("\r\n", "\n").Trim('\r', '\n');
+        if (text.TrimStart().StartsWith("proxies:", StringComparison.Ordinal))
         {
             var nl = text.IndexOf('\n');
-            text = nl < 0 ? "" : text[(nl + 1)..].Trim();
+            text = nl < 0 ? "" : text[(nl + 1)..].TrimStart('\r', '\n');
         }
-        return text;
+        return text.TrimEnd();
     }
 
     public static DialerProxyFiles Build(DialerProxyInput input)
     {
         var relay = NormalizeRelayYaml(input.RelayYaml);
         var names = ExtractRelayNames(relay);
-        if (names.Count == 0) throw new InvalidOperationException("请粘贴至少一个中转节点（需要 `- name:`）。");
+        if (names.Count == 0) throw new InvalidOperationException("还没有中转节点。请先导入订阅，再从订阅里选择。");
+        var ordered = new List<string>(names);
+        var selected = (input.SelectedRelay ?? "").Trim();
+        var selectedAt = ordered.FindIndex(name => name == selected);
+        if (selectedAt > 0)
+        {
+            ordered.RemoveAt(selectedAt);
+            ordered.Insert(0, selected);
+        }
         var homeServer = (input.HomeServer ?? "").Trim();
         var homePort = (input.HomePort ?? "").Trim();
         if (homeServer.Length == 0 || homePort.Length == 0)
@@ -95,11 +117,11 @@ public static class DialerProxyBuilder
         yaml.AppendLine($"  - name: {YamlScalar(group)}");
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
-        foreach (var name in names) yaml.AppendLine($"      - {YamlScalar(name)}");
+        foreach (var name in ordered) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine("  - name: Proxy");
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
-        foreach (var name in names) yaml.AppendLine($"      - {YamlScalar(name)}");
+        foreach (var name in ordered) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine($"      - {YamlScalar(target)}");
         yaml.AppendLine("rules:");
         yaml.AppendLine($"  - {loop}");

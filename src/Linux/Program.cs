@@ -14,6 +14,7 @@ static class Program
                 "restart" => Cli.Restart(),
                 "status" => Cli.Status(),
                 "logs" => Cli.Logs(),
+                "shell" => Cli.Shell(),
                 "serve" => await MihomoDaemon.RunAsync(args),
                 _ => Cli.Usage()
             };
@@ -64,6 +65,12 @@ static class Cli
         return 0;
     }
 
+    public static int Shell()
+    {
+        Console.WriteLine(ShellSetup.Install());
+        return 0;
+    }
+
     public static int Logs()
     {
         var store = new LocalService().Store;
@@ -81,6 +88,7 @@ static class Cli
         Console.WriteLine("codex-switch restart");
         Console.WriteLine("codex-switch status");
         Console.WriteLine("codex-switch logs");
+        Console.WriteLine("codex-switch shell     写入 claude 和 codex 的代理函数");
         return 1;
     }
 

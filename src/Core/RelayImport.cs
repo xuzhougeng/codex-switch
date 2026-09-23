@@ -13,7 +13,7 @@ public static class RelayImport
             if (lines[i].Trim() is "proxies:" or "proxies: []") { start = i + 1; break; }
         }
         var body = start < 0 ? normalized : SliceUntilNextKey(lines, start);
-        body = StripFullLineComments(body).Trim();
+        body = StripFullLineComments(body).Trim('\r', '\n');
         if (DialerProxyBuilder.ExtractRelayNames(body).Count == 0)
             throw new InvalidOperationException("没有读到中转节点。订阅需要直接包含 proxies 列表。");
         return body;

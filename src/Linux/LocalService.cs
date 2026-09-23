@@ -4,10 +4,24 @@ namespace CodexSwitch.Linux;
 
 sealed class LocalService
 {
-    public ClashProxyStore Store { get; } = new();
+    public ClashProxyStore Store { get; } = ClashProxyStore.CreateLinux();
     public MihomoService Service { get; }
 
-    public LocalService() => Service = new MihomoService(Store);
+    public LocalService()
+    {
+        Service = new MihomoService(Store);
+        RetargetLegacyUnit();
+    }
+
+    private void RetargetLegacyUnit()
+    {
+        if (!SystemdUnit.Available() || !File.Exists(SystemdUnit.UnitPath)) return;
+        var text = File.ReadAllText(SystemdUnit.UnitPath);
+        if (!text.Contains("/.codex", StringComparison.Ordinal)) return;
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable)) return;
+        SystemdUnit.Install(executable, Store.Home);
+    }
 
     public ClashProxySettings Load() => File.Exists(Store.SettingsPath) ? Store.Load() : new ClashProxySettings();
 

@@ -22,9 +22,14 @@ sealed class MihomoTui
             var status = local.Service.Status();
             AnsiConsole.Clear();
             Render(settings, status);
+            var choices = new[] { "启动", "停止", "重启", "节点", "家宽 SOCKS5", "端口与限流", "切换第一跳", "运行详情", "日志", "内核", "Shell 命令", "开机启动", "退出" };
             var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
-                .Title("管理")
-                .AddChoices("启动", "停止", "重启", "节点", "家宽 SOCKS5", "端口与限流", "切换第一跳", "运行详情", "日志", "内核", "开机启动", "退出"));
+                .Title("[grey]选择[/]")
+                .PageSize(choices.Length)
+                .WrapAround()
+                .HighlightStyle(new Style(foreground: Color.Black, background: Color.Yellow, decoration: Decoration.Bold))
+                .MoreChoicesText("[grey]↑↓ 还有选项[/]")
+                .AddChoices(choices));
             if (choice == "退出") return 0;
             try
             {
@@ -40,6 +45,7 @@ sealed class MihomoTui
                     case "运行详情": await Details(settings, status); break;
                     case "日志": Logs(); break;
                     case "内核": await Kernel(settings); break;
+                    case "Shell 命令": Pause(ShellSetup.Install()); break;
                     case "开机启动": Boot(settings); break;
                 }
             }
@@ -61,19 +67,99 @@ sealed class MihomoTui
 
     private void Render(ClashProxySettings settings, ClashProxyStatus status)
     {
-        AnsiConsole.Write(new Rule("mihomo").LeftJustified());
-        AnsiConsole.MarkupLine(status.Running ? "[green]运行中[/]" : "[yellow]未运行[/]");
-        AnsiConsole.WriteLine(status.Detail);
-        AnsiConsole.WriteLine(Chain(settings));
-        AnsiConsole.MarkupLine("[grey]客户端只使用 HTTP 端口。一跳和限流端口由本机链路占用。[/]");
-        AnsiConsole.WriteLine("端口  HTTP " + settings.HttpPort + "   一跳 " + settings.SocksPort + "   控制 " + settings.Controller + "   限流 " + settings.LimiterListen);
-        AnsiConsole.WriteLine("限流  同时 " + settings.MaxConcurrent + "   间隔 " + settings.DialIntervalMs + " ms   排队 " + settings.QueueWaitS + " s");
+        var home = string.IsNullOrWhiteSpace(settings.HomeServer)
+            ? "[grey]未填写[/]"
+            : "[bold]" + Markup.Escape(settings.HomeServer + ":" + settings.HomePort) + "[/]";
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
-        AnsiConsole.WriteLine(names.Count == 0 ? "节点  未配置" : "节点  " + string.Join("、", names.Take(4)) + (names.Count > 4 ? " 等 " + names.Count + " 个" : ""));
-        AnsiConsole.WriteLine("内核  " + KernelLabel(settings));
-        var boot = SystemdUnit.Available() ? (SystemdUnit.IsEnabled() ? "开机启动  已启用" : "开机启动  未启用") : "开机启动  无 systemd";
-        AnsiConsole.WriteLine(boot);
+        var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "";
+        var nodes = names.Count == 0
+            ? "[grey]先填订阅[/]"
+            : "[bold]" + Markup.Escape(current) + "[/]  [grey]订阅共 " + names.Count + " 个[/]";
+        var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "[grey]关[/]";
+        var state = status.Running ? "[green]●[/] 运行中" : "[yellow]○[/] 未运行";
+        var kernel = KernelLine(settings);
+        var pace = ReadPace(status);
+
+        var hops = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        hops.AddColumns(new TableColumn(""), new TableColumn(""), new TableColumn(""), new TableColumn(""));
+        hops.AddRow(
+            new Markup("[grey]客户端[/]"),
+            new Markup("[grey]限流[/]"),
+            new Markup("[grey]一跳[/]"),
+            new Markup("[grey]家宽[/]"));
+        hops.AddRow(
+            new Markup("[bold]" + Markup.Escape("127.0.0.1:" + settings.HttpPort) + "[/]"),
+            new Markup("[bold]" + Markup.Escape(settings.LimiterListen) + "[/]"),
+            new Markup("[bold]" + Markup.Escape("127.0.0.1:" + settings.SocksPort) + "[/]"),
+            new Markup(home));
+
+        var meta = "[grey]并发[/] " + settings.MaxConcurrent
+            + "   [grey]间隔[/] " + settings.DialIntervalMs + " ms"
+            + "   [grey]排队[/] " + settings.QueueWaitS + " s"
+            + "   [grey]控制[/] " + Markup.Escape(settings.Controller)
+            + (pace == null ? "" : "   " + pace);
+        var body = new Rows(
+            new Markup(state + "    [grey]开机[/] " + boot),
+            hops,
+            new Markup(meta),
+            new Markup("[grey]节点[/] " + nodes),
+            new Markup(kernel));
+        AnsiConsole.Write(new Panel(body)
+        {
+            Header = new PanelHeader(" mihomo ", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Grey),
+            Padding = new Padding(1, 0, 1, 0)
+        });
         AnsiConsole.WriteLine();
+    }
+
+    private string KernelLine(ClashProxySettings settings)
+    {
+        try
+        {
+            var path = MihomoKernel.Resolve(settings.MihomoPath);
+            var version = ShortVersion(Version(path));
+            return "[grey]内核[/] [bold]" + Markup.Escape(version) + "[/]  [grey]" + Markup.Escape(TailPath(path, 48)) + "[/]";
+        }
+        catch (InvalidOperationException ex)
+        {
+            return "[yellow]" + Markup.Escape(ex.Message) + "[/]";
+        }
+    }
+
+    private string? ReadPace(ClashProxyStatus status)
+    {
+        if (!status.Running) return null;
+        try
+        {
+            var path = local.Store.LimiterStatePath;
+            if (!File.Exists(path)) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            var root = doc.RootElement;
+            return "[grey]活动[/] " + root.GetProperty("active").GetInt32() + "   [grey]等待[/] " + root.GetProperty("waiting").GetInt32();
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static string ShortVersion(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "未知";
+        var start = raw.IndexOf(" v", StringComparison.Ordinal);
+        start = start < 0 ? raw.IndexOf('v') : start + 1;
+        if (start < 0) return raw.Trim();
+        var end = raw.IndexOf(' ', start);
+        return end < 0 ? raw[start..].Trim() : raw[start..end];
+    }
+
+    private static string TailPath(string path, int max)
+    {
+        var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var shown = parts.Length <= 3 ? string.Join('/', parts) : "…/" + string.Join('/', parts[^3..]);
+        return shown.Length <= max ? shown : "…" + shown[^(max - 1)..];
     }
 
     private void Start(ClashProxySettings settings, ClashProxyStatus status)
@@ -85,31 +171,142 @@ sealed class MihomoTui
 
     private async Task Nodes(ClashProxySettings settings)
     {
-        var choice = AnsiConsole.Prompt(new SelectionPrompt<string>().Title("节点").AddChoices("从文件导入", "从订阅导入", "编辑", "返回"));
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (string.IsNullOrWhiteSpace(settings.SubscriptionUrl) && names.Count == 0)
+        {
+            await ReplaceSubscription(settings);
+            return;
+        }
+        var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "未选择";
+        var url = string.IsNullOrWhiteSpace(settings.SubscriptionUrl) ? "未填写" : settings.SubscriptionUrl;
+        AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
+        AnsiConsole.MarkupLine("[grey]{0}[/]", Markup.Escape(url));
+        var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
+            .Title("[grey]订阅里的节点[/]")
+            .AddChoices("测速选择第一跳", "填写订阅", "刷新订阅", "手动选择", "返回"));
         if (choice == "返回") return;
-        string text;
-        if (choice == "从文件导入")
+        if (choice == "填写订阅") await ReplaceSubscription(settings);
+        else if (choice == "刷新订阅") await RefreshSubscription(settings);
+        else if (choice == "手动选择") ChooseRelay(settings);
+        else await ProbeAndSelect(settings);
+    }
+
+    private async Task ReplaceSubscription(ClashProxySettings settings)
+    {
+        var url = Ask("订阅 URL", settings.SubscriptionUrl);
+        settings.SubscriptionUrl = url.Trim();
+        await RefreshSubscription(settings);
+    }
+
+    private async Task RefreshSubscription(ClashProxySettings settings)
+    {
+        if (string.IsNullOrWhiteSpace(settings.SubscriptionUrl))
+            throw new InvalidOperationException("还没有订阅 URL。");
+        settings.RelayYaml = await RelayImport.FromUrlAsync(settings.SubscriptionUrl);
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (!names.Contains(settings.SelectedRelay)) settings.SelectedRelay = names[0];
+        local.Store.Save(settings);
+        if (string.IsNullOrWhiteSpace(settings.HomeServer))
         {
-            var path = AnsiConsole.Prompt(new TextPrompt<string>("YAML 路径"));
-            text = await File.ReadAllTextAsync(path);
+            Pause("订阅已保存，共 " + names.Count + " 个节点。填好家宽后可以测速选择第一跳。");
+            return;
         }
-        else if (choice == "从订阅导入")
+        await ProbeAndSelect(settings);
+    }
+
+    private async Task ProbeAndSelect(ClashProxySettings settings)
+    {
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        if (string.IsNullOrWhiteSpace(settings.HomeServer))
+            throw new InvalidOperationException("先填写家宽，再测第一跳。");
+        if (!names.Contains(settings.SelectedRelay)) settings.SelectedRelay = names[0];
+        local.Store.Save(settings);
+        var status = local.Service.Status();
+        if (status.Running) local.Restart(settings);
+        else local.Start(settings);
+        var bestName = "";
+        var bestDelay = int.MaxValue;
+        var finished = 0;
+        await AnsiConsole.Status().StartAsync("测第一跳延迟", async ctx =>
         {
-            var url = AnsiConsole.Prompt(new TextPrompt<string>("订阅 URL"));
-            text = await RelayImport.FromUrlAsync(url);
+            await Parallel.ForEachAsync(names, new ParallelOptions { MaxDegreeOfParallelism = 6 }, async (name, token) =>
+            {
+                var delay = await ClashApi.DelayAsync(settings.Controller, name, 2500, token);
+                lock (names)
+                {
+                    finished++;
+                    if (delay >= 0 && delay < bestDelay)
+                    {
+                        bestDelay = delay;
+                        bestName = name;
+                    }
+                    ctx.Status("已测 " + finished + "/" + names.Count + (bestName.Length == 0 ? "" : "  最快 " + bestDelay + " ms"));
+                }
+            });
+        });
+        if (bestName.Length == 0) throw new InvalidOperationException("没有节点在 2.5 秒内测通。订阅已经保存。");
+        settings.SelectedRelay = bestName;
+        local.Store.Save(settings);
+        var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
+        try { await ClashApi.SelectAsync(settings.Controller, group, bestName, CancellationToken.None); }
+        catch (InvalidOperationException) { }
+        Pause(bestName + "  " + bestDelay + " ms，已保存。下次启动会直接用它。");
+    }
+
+    private void ChooseRelay(ClashProxySettings settings)
+    {
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        if (names.Count == 1)
+        {
+            settings.SelectedRelay = names[0];
+            Save(settings);
+            return;
         }
-        else text = Edit(settings.RelayYaml);
-        settings.RelayYaml = RelayImport.ExtractProxies(text);
+        var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
+            .Title("选择第一跳")
+            .PageSize(Math.Min(12, names.Count + 1))
+            .MoreChoicesText("[grey]↑↓ 还有节点[/]")
+            .AddChoices(names.Append("返回")));
+        if (choice == "返回") return;
+        settings.SelectedRelay = choice;
         Save(settings);
     }
 
     private void Home(ClashProxySettings settings)
     {
-        settings.HomeServer = Ask("家宽地址", settings.HomeServer);
-        settings.HomePort = Ask("家宽端口", settings.HomePort);
-        settings.HomeUsername = Ask("用户名，可留空", settings.HomeUsername);
-        if (AnsiConsole.Confirm("修改密码？", false))
-            settings.HomePassword = AnsiConsole.Prompt(new TextPrompt<string>("密码").Secret().AllowEmpty());
+        AnsiConsole.Write(new Panel(new Markup(
+            "[grey]填供应商给的 SOCKS5，不是街道地址。[/]\n" +
+            "整行粘贴  [bold]socks5://用户:密码@203.0.113.10:1080[/]\n" +
+            "或只填主机  [bold]203.0.113.10[/]，再补端口和账号"))
+        {
+            Header = new PanelHeader(" 美国家宽 ", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Grey),
+            Padding = new Padding(1, 0, 1, 0)
+        });
+        var typed = Ask("主机，或整行 socks5://…", settings.HomeServer);
+        if (!SocksEndpoint.TryParse(typed, out var endpoint))
+            throw new InvalidOperationException("没有认出主机。示例：socks5://user:pass@203.0.113.10:1080");
+        settings.HomeServer = endpoint.Host;
+        if (endpoint.Port != null) settings.HomePort = endpoint.Port;
+        else settings.HomePort = Ask("端口，例如 1080", string.IsNullOrWhiteSpace(settings.HomePort) ? "1080" : settings.HomePort);
+        if (endpoint.Username != null) settings.HomeUsername = endpoint.Username;
+        else settings.HomeUsername = Ask("用户名，没有就回车", settings.HomeUsername);
+        if (endpoint.Password != null) settings.HomePassword = endpoint.Password;
+        else if (string.IsNullOrEmpty(settings.HomePassword))
+            settings.HomePassword = AnsiConsole.Prompt(new TextPrompt<string>("密码，没有就回车").Secret().AllowEmpty());
+        else if (AnsiConsole.Confirm("更换已保存的密码？", false))
+            settings.HomePassword = AnsiConsole.Prompt(new TextPrompt<string>("新密码，回车则清空").Secret().AllowEmpty());
+        if (!int.TryParse(settings.HomePort, out var port) || port is < 1 or > 65535)
+            throw new InvalidOperationException("端口需要是 1 到 65535 的数字。");
+        var userShown = string.IsNullOrEmpty(settings.HomeUsername) ? "无" : settings.HomeUsername;
+        AnsiConsole.MarkupLine(
+            "主机 [bold]{0}[/]  端口 [bold]{1}[/]  用户 [bold]{2}[/]",
+            Markup.Escape(settings.HomeServer),
+            Markup.Escape(settings.HomePort),
+            Markup.Escape(userShown));
         Save(settings);
     }
 
@@ -196,43 +393,10 @@ sealed class MihomoTui
 
     private void Save(ClashProxySettings settings)
     {
-        local.Service.Check(settings);
         local.Store.Save(settings);
         if (local.Service.Status().Running && AnsiConsole.Confirm("配置已保存。现在重启？"))
             Pause(local.Restart(settings).Detail);
-        else Pause("配置已保存");
-    }
-
-    private string Edit(string current)
-    {
-        Directory.CreateDirectory(local.Store.WorkDirectory);
-        var path = Path.Combine(local.Store.WorkDirectory, "relay.edit.yaml");
-        var seed = string.IsNullOrWhiteSpace(current)
-            ? "- name: relay-example\n  type: ss\n  server: example.com\n  port: 443\n  cipher: aes-256-gcm\n  password: replace-me\n"
-            : current;
-        File.WriteAllText(path, seed);
-        if (OperatingSystem.IsLinux())
-        {
-            try { File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); } catch (IOException) { }
-        }
-        var editor = Environment.GetEnvironmentVariable("EDITOR");
-        if (string.IsNullOrWhiteSpace(editor)) editor = File.Exists("/usr/bin/nano") ? "nano" : "vi";
-        var info = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
-        info.ArgumentList.Add("-c");
-        info.ArgumentList.Add(editor + " '" + path.Replace("'", "'\\''") + "'");
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("无法打开编辑器。");
-        process.WaitForExit();
-        return File.ReadAllText(path);
-    }
-
-    private string KernelLabel(ClashProxySettings settings)
-    {
-        try
-        {
-            var path = MihomoKernel.Resolve(settings.MihomoPath);
-            return path + "  " + Version(path);
-        }
-        catch (InvalidOperationException ex) { return ex.Message; }
+        else Pause("已保存");
     }
 
     private string Version(string kernel)
@@ -268,8 +432,12 @@ sealed class MihomoTui
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return "进程已退出。"; }
     }
 
-    private static string Ask(string label, string current) =>
-        AnsiConsole.Prompt(new TextPrompt<string>(label).DefaultValue(current ?? "").AllowEmpty());
+    private static string Ask(string label, string current)
+    {
+        var prompt = new TextPrompt<string>(label).AllowEmpty();
+        if (!string.IsNullOrEmpty(current)) prompt.DefaultValue(current);
+        return AnsiConsole.Prompt(prompt);
+    }
 
     private static int AskInt(string label, int current) =>
         AnsiConsole.Prompt(new TextPrompt<int>(label).DefaultValue(current)
