@@ -1,6 +1,15 @@
 # Codex Switch
 
-本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**。原 PowerShell 命令行继续保留。
+本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**，Linux 使用终端界面管理 mihomo。原 PowerShell 命令行继续保留。
+
+当前版本 **0.1.0**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.1.0)
+
+| 包 | 平台 |
+| --- | --- |
+| `CodexSwitch-0.1.0-windows-x64.zip` | Windows x64 |
+| `CodexSwitch-0.1.0-macos-arm64.zip` | macOS Apple Silicon |
+| `CodexSwitch-0.1.0-linux-x64.tar.gz` | Linux x64，含 mihomo |
+| `CodexSwitch-0.1.0-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
 
 原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 
@@ -26,6 +35,36 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 双击 `codex-switch.cmd` 默认启动原生版；未构建时会显示构建命令。旧界面仍可通过 `powershell -ExecutionPolicy Bypass -File codex-switch.ps1 gui` 启动。命令行兼容 `codex-switch.cmd list|add|switch|remove`。
+
+## Linux
+
+Linux 用终端界面管理 mihomo，形态接近 [ShellCrash](https://github.com/juewuy/ShellCrash) 的纯净模式：启动、停止、重启、节点、端口、日志、内核和用户级开机启动。它不改防火墙，也不做透明代理。
+
+核心链路按端口直接接好。Codex / Claude 走 HTTP 端口，AI 目标在本机限流后，经 mihomo 的一跳 SOCKS 出去，再进美国家宽。限流跑在 `codex-switch serve` 进程里，不生成、也不再执行 `socks-limiter.py` 或 `start-ai.sh`。
+
+官方 mihomo 内核放在 `src/Linux/kernel/`（当前 v1.19.31，GPL-3.0）。启动时优先用这份内核；配置里填了绝对路径时才改用别的。
+
+```bash
+bash scripts/build-linux.sh
+./dist/linux-x64/codex-switch
+./dist/linux-x64/codex-switch start
+./dist/linux-x64/codex-switch status
+```
+
+构建需要 .NET 8。发布结果是自包含的 `linux-x64` 目录，内核在 `kernel/linux-x64/mihomo`。开发时也可以：
+
+```bash
+~/.dotnet/dotnet run --project src/Linux/CodexSwitch.Linux.csproj
+```
+
+默认端口是 HTTP `1990`、一跳 SOCKS `1991`、外部控制 `127.0.0.1:1993`、限流 `127.0.0.1:1994`。客户端使用：
+
+```bash
+export http_proxy=http://127.0.0.1:1990
+export https_proxy=http://127.0.0.1:1990
+```
+
+配置仍在 `~/.codex/codex-switch/clash-proxy.json`。mihomo 只读运行时写出的 `clash/ai.yaml`。退出菜单后服务继续运行；`codex-switch stop` 或菜单里的停止会关掉它。开机启动写的是 `~/.config/systemd/user/codex-mihomo.service`。
 
 ## macOS
 
@@ -67,7 +106,7 @@ open "dist/macos/Codex Switch.app"
 - 配置保存在 `~/.codex/codex-switch/clash-proxy.json`（含家宽凭据，权限 0600）
 - 生成文件在 `~/.codex/codex-switch/clash/`：`ai.yaml`、`socks-limiter.py`、`socks-limiter.json`
 - 启动后 Codex 走 `http://127.0.0.1:1990`。请自行设置 `http_proxy` / `https_proxy`，或在系统代理中指向该端口
-- 需要本机已安装 `mihomo` 和 `python3`（Windows 为 `python`）。也可在页面填写绝对路径
+- Windows 和 macOS 需要本机已安装 `mihomo` 和 `python3`（Windows 为 `python`）。也可在页面填写绝对路径。Linux 终端版自带 mihomo，并在进程内做限流
 
 限流器把打向家宽的新建连接排队，避免 Claude / Codex 把住宅 SOCKS5 打满后出现中途断流。
 
@@ -95,4 +134,4 @@ $env:CODEX_HOME = Join-Path $PWD 'test-results/preview-home'
 & .\dist\windows-x64\CodexSwitch.Windows.exe
 ```
 
-`src/Core` 是 Windows 的无 UI 存储层；`src/Windows` 是 WinUI 3 界面；`src/macOS/Sources/CodexSwitchCore` 是遵循相同协议的 Swift 存储层；`src/macOS/Sources/CodexSwitch` 是 SwiftUI 界面。两端复用数据协议和行为约定，各自使用原生运行时，不依赖 PowerShell 或 WebView 渲染界面。
+`src/Core` 是 Windows 的无 UI 存储层，Linux 终端版也用它生成双跳配置并在进程内限流。`src/Windows` 是 WinUI 3 界面；`src/Linux` 是终端管理界面；`src/macOS/Sources/CodexSwitchCore` 是遵循相同协议的 Swift 存储层；`src/macOS/Sources/CodexSwitch` 是 SwiftUI 界面。账号界面各自使用原生运行时，不依赖 PowerShell 或 WebView。

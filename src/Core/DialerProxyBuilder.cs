@@ -19,7 +19,8 @@ public sealed record DialerProxyInput(
     int MaxConcurrent = 8,
     int MaxInflightDials = 1,
     int DialIntervalMs = 250,
-    int QueueWaitS = 8);
+    int QueueWaitS = 8,
+    bool AllowLan = true);
 
 public sealed record DialerProxyFiles(string Yaml, string LimiterJson, string LimiterPython);
 
@@ -73,10 +74,11 @@ public static class DialerProxyBuilder
         var yaml = new StringBuilder();
         yaml.AppendLine($"port: {input.HttpPort}");
         yaml.AppendLine($"socks-port: {input.SocksPort}");
-        yaml.AppendLine("allow-lan: true");
         yaml.AppendLine("mode: rule");
         yaml.AppendLine("log-level: info");
         yaml.AppendLine($"external-controller: {YamlScalar(input.Controller)}");
+        yaml.AppendLine($"allow-lan: {(input.AllowLan ? "true" : "false")}");
+        if (!input.AllowLan) yaml.AppendLine("bind-address: 127.0.0.1");
         yaml.AppendLine("ipv6: false");
         yaml.AppendLine("tcp-concurrent: false");
         yaml.AppendLine("keep-alive-idle: 15");
@@ -177,11 +179,16 @@ public static class DialerProxyBuilder
     private static string IndentRelay(string relay)
     {
         var lines = relay.Split('\n');
+        var needsIndent = false;
+        foreach (var line in lines)
+        {
+            if (line.Length > 0 && line[0] != ' ' && line[0] != '\t') { needsIndent = true; break; }
+        }
         var built = new StringBuilder();
         foreach (var line in lines)
         {
             if (line.Length == 0) { built.AppendLine(); continue; }
-            built.AppendLine(line.StartsWith(' ') || line.StartsWith('\t') ? line : "  " + line);
+            built.AppendLine(needsIndent ? "  " + line : line);
         }
         return built.ToString().TrimEnd();
     }

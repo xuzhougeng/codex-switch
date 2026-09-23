@@ -1,0 +1,7 @@
+mihomo v1.19.31
+Upstream: https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.31
+License: GPL-3.0-only
+Binaries are the official unmodified release builds:
+  linux-x64/mihomo   mihomo-linux-amd64-compatible-v1.19.31.gz
+  linux-arm64/mihomo mihomo-linux-arm64-v1.19.31.gz
+Source for this version is the tagged tree at the upstream URL.

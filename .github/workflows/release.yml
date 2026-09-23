@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and publish WinUI 3
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Zip
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}".TrimStart('v')
+          tar -a -cf "CodexSwitch-$ver-windows-x64.zip" -C dist/windows-x64 .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: CodexSwitch-*-windows-x64.zip
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test and package SwiftUI
+        run: bash scripts/build-macos.sh
+      - name: Archive app preserving permissions
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          ditto -c -k --sequesterRsrc --keepParent "dist/macos/Codex Switch.app" "CodexSwitch-${ver}-macos-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: CodexSwitch-*-macos-arm64.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and publish
+        run: |
+          if [[ "${{ matrix.arch }}" != "x64" ]]; then export SKIP_TESTS=1; fi
+          bash scripts/build-linux.sh "${{ matrix.arch }}"
+      - name: Archive
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          arch="${{ matrix.arch }}"
+          stage="$(mktemp -d)"
+          name="CodexSwitch-${ver}-linux-${arch}"
+          mkdir -p "$stage/$name"
+          cp -a "dist/linux-${arch}/." "$stage/$name/"
+          tar -C "$stage" -czf "${name}.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: CodexSwitch-*-linux-${{ matrix.arch }}.tar.gz
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          cd packages
+          sha256sum CodexSwitch-* > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$ver" \
+            --notes "## ${ver}
+
+          Windows 和 macOS 是 Codex 账号切换。Linux 是 mihomo 终端管理，包内带有 mihomo v1.19.31，按端口接管 Codex / Claude 流量。
+
+          | 包 | 平台 |
+          | --- | --- |
+          | \`CodexSwitch-${ver}-windows-x64.zip\` | Windows 10 2004+ / 11，x64。解压后保留整个目录，运行 \`CodexSwitch.Windows.exe\` |
+          | \`CodexSwitch-${ver}-macos-arm64.zip\` | macOS 13+，Apple Silicon。本地 ad-hoc 签名，未经 Apple 公证 |
+          | \`CodexSwitch-${ver}-linux-x64.tar.gz\` | Linux x64。解压后运行 \`codex-switch\` |
+          | \`CodexSwitch-${ver}-linux-arm64.tar.gz\` | Linux arm64。解压后运行 \`codex-switch\` |
+
+          Linux 启动后：
+
+          \`\`\`bash
+          export http_proxy=http://127.0.0.1:1990
+          export https_proxy=http://127.0.0.1:1990
+          \`\`\`" \
+            CodexSwitch-* SHA256SUMS

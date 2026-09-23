@@ -37,3 +37,17 @@ jobs:
         with:
           name: codex-switch-macos
           path: dist/macos/CodexSwitch-macOS.zip
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and publish Linux TUI
+        run: bash scripts/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-switch-linux-x64
+          path: dist/linux-x64/

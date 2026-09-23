@@ -35,6 +35,9 @@ public sealed class ClashProxyStore
     public string LimiterLogPath => Path.Combine(WorkDirectory, "limiter.log");
     public string MihomoPidPath => Path.Combine(WorkDirectory, "mihomo.pid");
     public string LimiterPidPath => Path.Combine(WorkDirectory, "limiter.pid");
+    public string ServicePidPath => Path.Combine(WorkDirectory, "service.pid");
+    public string ServiceLogPath => Path.Combine(WorkDirectory, "service.log");
+    public string LimiterStatePath => Path.Combine(WorkDirectory, "limiter.state.json");
 
     public ClashProxyStore(string? home = null) => Home = Path.GetFullPath(home ??
         Environment.GetEnvironmentVariable("CODEX_HOME") ??
@@ -82,7 +85,17 @@ public sealed class ClashProxyStore
         return files;
     }
 
-    public static DialerProxyInput ToInput(ClashProxySettings settings) => new(
+    public string WriteRuntime(ClashProxySettings settings, bool allowLan = false)
+    {
+        var files = DialerProxyBuilder.Build(ToInput(settings, allowLan));
+        Directory.CreateDirectory(WorkDirectory);
+        Write(YamlPath, files.Yaml);
+        Write(LimiterJsonPath, files.LimiterJson);
+        TryRestrict(LimiterJsonPath);
+        return files.LimiterJson;
+    }
+
+    public static DialerProxyInput ToInput(ClashProxySettings settings, bool allowLan = true) => new(
         settings.RelayYaml,
         settings.HomeServer,
         settings.HomePort,
@@ -97,7 +110,8 @@ public sealed class ClashProxyStore
         settings.MaxConcurrent,
         1,
         settings.DialIntervalMs,
-        settings.QueueWaitS);
+        settings.QueueWaitS,
+        allowLan);
 
     private static void Write(string path, string text)
     {

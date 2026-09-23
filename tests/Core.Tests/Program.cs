@@ -119,6 +119,10 @@ try
     Check(built.Yaml.Contains("IP-CIDR,38.121.23.194/32,relay-group,no-resolve"), "home IP uses first hop to avoid a loop");
     Check(built.Yaml.Contains("DOMAIN-SUFFIX,openai.com,target-socks5"), "openai goes through the limiter target");
     Check(built.Yaml.Contains("DOMAIN,api.github.com,relay-group"), "github bypasses residential SOCKS");
+    Check(built.Yaml.Contains("allow-lan: true"), "desktop yaml keeps lan on by default");
+    Check(!built.Yaml.Contains("bind-address:"), "desktop yaml does not pin the bind address");
+    var plain = DialerProxyBuilder.Build(new DialerProxyInput("- name: relay-plain\n  type: ss\n  server: example.com\n  port: 443\n", "1.2.3.4", "1080", "", ""));
+    Check(plain.Yaml.Contains("\n  - name: relay-plain\n    type: ss\n"), "an unindented relay list is nested under proxies");
     Check(built.LimiterJson.Contains("\"upstream\": \"38.121.23.194:33225\""), "limiter json keeps home SOCKS");
     Check(built.LimiterPython.Contains("max_concurrent"), "embedded limiter script is present");
     Reject(() => DialerProxyBuilder.Build(new DialerProxyInput("", "1.2.3.4", "1", "", "")), "empty relay rejected");
@@ -150,6 +154,45 @@ try
     Check(fake.Starts[1].Args.Contains("-f"), "second process is mihomo -f");
     runtime.Stop();
     Check(fake.Stopped.Count == 2, "stop kills limiter and mihomo");
+
+    var managedHome = Path.Combine(root, "managed");
+    var managedStore = new ClashProxyStore(managedHome);
+    var managedFake = new FakeProcessHost();
+    var managedExe = Path.Combine(root, "codex-switch-stub");
+    File.WriteAllText(managedExe, "");
+    var managed = new MihomoService(managedStore, managedFake) { RequireListen = false, Executable = managedExe };
+    var managedSettings = new ClashProxySettings
+    {
+        RelayYaml = relay, HomeServer = "home.example.com", HomePort = "1080", HomePassword = "pw",
+        HttpPort = 2000, SocksPort = 2001, Controller = "127.0.0.1:2003", LimiterListen = "127.0.0.1:2004"
+    };
+    var managedStatus = managed.Start(managedSettings);
+    Check(managedStatus.Running, "managed service reports running without python");
+    Check(managedFake.Starts.Count == 1 && managedFake.Starts[0].Args.Contains("serve --detach"), "managed start launches the in-process serve command");
+    Check(!File.Exists(managedStore.LimiterPythonPath), "managed start does not write a limiter script");
+    var managedYaml = File.ReadAllText(managedStore.YamlPath);
+    Check(managedYaml.Contains("port: 2000") && managedYaml.Contains("socks-port: 2001") && managedYaml.Contains("port: 2004"), "managed yaml uses the configured ports");
+    Check(managedYaml.Contains("allow-lan: false") && managedYaml.Contains("bind-address: 127.0.0.1"), "managed yaml listens on loopback");
+    Check(File.ReadAllText(managedStore.LimiterJsonPath).Contains("\"via\": \"127.0.0.1:2001\""), "limiter reaches the first hop on the socks port");
+    managed.Stop();
+    Check(managedFake.Stopped.Count >= 1, "managed stop kills the service");
+    Reject(() => managed.Start(new ClashProxySettings { RelayYaml = relay, HomeServer = "home.example.com", HomePort = "1080", HttpPort = 1990, SocksPort = 1990 }), "shared ports rejected");
+
+    var extracted = RelayImport.ExtractProxies("mixed: true\nproxies:\n  - name: relay-a\n    type: ss\nproxy-groups:\n  - name: g\n");
+    Check(extracted.Contains("name: relay-a") && !extracted.Contains("proxy-groups"), "subscription import keeps the proxy list");
+    Check(RelayImport.ExtractProxies("# comment\n- name: relay-b\n  type: ss").Contains("name: relay-b"), "a bare proxy list is accepted");
+    Reject(() => RelayImport.ExtractProxies("rules:\n  - MATCH,DIRECT\n"), "subscription without proxies is rejected");
+
+    var kernelDir = Path.Combine(root, "kernel-app");
+    var archDir = Path.Combine(kernelDir, "kernel", MihomoKernel.ArchFolder);
+    Directory.CreateDirectory(archDir);
+    var kernelFile = Path.Combine(archDir, "mihomo");
+    File.WriteAllText(kernelFile, "");
+    Check(MihomoKernel.Bundled(kernelDir) == Path.GetFullPath(kernelFile), "bundled kernel resolves from the app directory");
+    Check(MihomoKernel.Resolve(null, kernelDir) == Path.GetFullPath(kernelFile), "resolve prefers the bundled kernel");
+
+    await SocksLimiterChecks.Run();
+    Console.WriteLine("PASS in-process limiter forwards through the first hop and times out the queue");
 
     Console.WriteLine("All core integration checks passed. Only synthetic credentials were used.");
 }
