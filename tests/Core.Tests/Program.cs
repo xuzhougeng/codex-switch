@@ -121,8 +121,8 @@ try
     Check(built.Yaml.Contains("DOMAIN,api.github.com,relay-group"), "github bypasses residential SOCKS");
     Check(built.Yaml.Contains("allow-lan: true"), "desktop yaml keeps lan on by default");
     Check(!built.Yaml.Contains("bind-address:"), "desktop yaml does not pin the bind address");
-    var plain = DialerProxyBuilder.Build(new DialerProxyInput("- name: relay-plain\n  type: ss\n  server: example.com\n  port: 443\n", "1.2.3.4", "1080", "", ""));
-    Check(plain.Yaml.Contains("\n  - name: relay-plain\n    type: ss\n"), "an unindented relay list is nested under proxies");
+    var plain = DialerProxyBuilder.Build(new DialerProxyInput("- name: relay-plain\n  type: ss\n  server: example.com\n  port: 443\n", "1.2.3.4", "1080", "", "")).Yaml.Replace("\r\n", "\n");
+    Check(plain.Contains("\n  - name: relay-plain\n    type: ss\n"), "an unindented relay list is nested under proxies");
     Check(built.LimiterJson.Contains("\"upstream\": \"38.121.23.194:33225\""), "limiter json keeps home SOCKS");
     Check(built.LimiterPython.Contains("max_concurrent"), "embedded limiter script is present");
     Reject(() => DialerProxyBuilder.Build(new DialerProxyInput("", "1.2.3.4", "1", "", "")), "empty relay rejected");
