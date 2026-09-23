@@ -1,4 +1,8 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.IO.Compression;
+using System.Net;
+using System.Text.Json;
 using CodexSwitch.Core;
 using Spectre.Console;
 
@@ -7,7 +11,7 @@ namespace CodexSwitch.Linux;
 sealed class MihomoTui
 {
     private readonly LocalService local = new();
-    private string? kernelVersion;
+    private (string Path, DateTime Stamp, string Line)? versionCache;
 
     public async Task<int> RunAsync()
     {
@@ -44,12 +48,13 @@ sealed class MihomoTui
                     case "切换第一跳": await SelectRelay(settings, status); break;
                     case "运行详情": await Details(settings, status); break;
                     case "日志": Logs(); break;
-                    case "内核": await Kernel(settings); break;
+                    case "内核": await Kernel(); break;
                     case "Shell 命令": Pause(ShellSetup.Install()); break;
                     case "开机启动": Boot(settings); break;
                 }
             }
-            catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException)
+            catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException
+                or JsonException or Win32Exception or UnauthorizedAccessException)
             {
                 Pause(ex.Message);
             }
@@ -77,7 +82,7 @@ sealed class MihomoTui
             : "[bold]" + Markup.Escape(current) + "[/]  [grey]订阅共 " + names.Count + " 个[/]";
         var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "[grey]关[/]";
         var state = status.Running ? "[green]●[/] 运行中" : "[yellow]○[/] 未运行";
-        var kernel = KernelLine(settings);
+        var kernel = KernelLine(settings, status);
         var pace = ReadPace(status);
 
         var hops = new Table().Border(TableBorder.None).HideHeaders().Expand();
@@ -114,13 +119,14 @@ sealed class MihomoTui
         AnsiConsole.WriteLine();
     }
 
-    private string KernelLine(ClashProxySettings settings)
+    private string KernelLine(ClashProxySettings settings, ClashProxyStatus status)
     {
         try
         {
             var path = MihomoKernel.Resolve(settings.MihomoPath);
-            var version = ShortVersion(Version(path));
-            return "[grey]内核[/] [bold]" + Markup.Escape(version) + "[/]  [grey]" + Markup.Escape(TailPath(path, 48)) + "[/]";
+            var line = "[grey]内核[/] [bold]" + Markup.Escape(VersionOf(path)) + "[/] [grey]" + KernelSource(settings, path) + "[/]";
+            var running = RunningKernel(status, path);
+            return running == null ? line : line + "   " + running;
         }
         catch (InvalidOperationException ex)
         {
@@ -143,23 +149,6 @@ sealed class MihomoTui
         {
             return null;
         }
-    }
-
-    private static string ShortVersion(string raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return "未知";
-        var start = raw.IndexOf(" v", StringComparison.Ordinal);
-        start = start < 0 ? raw.IndexOf('v') : start + 1;
-        if (start < 0) return raw.Trim();
-        var end = raw.IndexOf(' ', start);
-        return end < 0 ? raw[start..].Trim() : raw[start..end];
-    }
-
-    private static string TailPath(string path, int max)
-    {
-        var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var shown = parts.Length <= 3 ? string.Join('/', parts) : "…/" + string.Join('/', parts[^3..]);
-        return shown.Length <= max ? shown : "…" + shown[^(max - 1)..];
     }
 
     private void Start(ClashProxySettings settings, ClashProxyStatus status)
@@ -319,7 +308,6 @@ sealed class MihomoTui
         settings.MaxConcurrent = AskInt("同时打到家宽的连接数", settings.MaxConcurrent);
         settings.DialIntervalMs = AskInt("两条新建之间的间隔（毫秒）", settings.DialIntervalMs);
         settings.QueueWaitS = AskInt("排队上限（秒）", settings.QueueWaitS);
-        settings.MihomoPath = Ask("mihomo 路径，留空使用内置内核", settings.MihomoPath);
         Save(settings);
     }
 
@@ -357,21 +345,172 @@ sealed class MihomoTui
         Pause("");
     }
 
-    private async Task Kernel(ClashProxySettings settings)
+    private async Task Kernel()
     {
-        var kernel = MihomoKernel.Resolve(settings.MihomoPath);
-        MihomoKernel.EnsureExecutable(kernel);
-        AnsiConsole.WriteLine(kernel);
-        AnsiConsole.WriteLine(Version(kernel));
-        AnsiConsole.WriteLine(File.Exists(Path.Combine(AppContext.BaseDirectory, "kernel", "SOURCE.txt"))
-            ? await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "kernel", "SOURCE.txt"))
-            : "内置内核来源见 src/Linux/kernel/SOURCE.txt");
-        if (AnsiConsole.Confirm("用当前配置做 mihomo -t？", true))
+        while (true)
         {
-            local.Service.Prepare(local.Load());
-            AnsiConsole.WriteLine(await ConfigCheck.RunAsync(kernel, local.Store));
+            var settings = local.Load();
+            var status = local.Service.Status();
+            var grid = new Grid().AddColumn(new GridColumn().NoWrap().PadRight(2)).AddColumn();
+            void Row(string label, string value) => grid.AddRow(new Markup("[grey]" + label + "[/]"), new Markup(value));
+            var version = "";
+            try
+            {
+                var path = MihomoKernel.Resolve(settings.MihomoPath);
+                MihomoKernel.EnsureExecutable(path);
+                var line = VersionLine(path);
+                version = MihomoKernel.ParseVersion(line);
+                var build = version.Length == 0 ? line : line[(line.IndexOf(version, StringComparison.Ordinal) + version.Length)..].Trim();
+                Row("版本", "[bold]" + Markup.Escape(version.Length == 0 ? "未知" : version) + "[/]  [grey]" + Markup.Escape(build) + "[/]");
+                Row("来源", KernelSource(settings, path));
+                Row("路径", Markup.Escape(path));
+                Row("进程", RunningKernel(status, path) ?? "[grey]未运行[/]");
+            }
+            catch (InvalidOperationException ex)
+            {
+                Row("路径", "[yellow]" + Markup.Escape(ex.Message) + "[/]");
+            }
+            if (status.Running)
+            {
+                try
+                {
+                    var (up, down, count) = await ClashApi.TrafficAsync(settings.Controller, CancellationToken.None);
+                    Row("流量", "↑ " + Size(up) + "  ↓ " + Size(down) + "  [grey]" + count + " 条连接[/]");
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException) { }
+            }
+            AnsiConsole.Clear();
+            AnsiConsole.Write(new Panel(grid)
+            {
+                Header = new PanelHeader(" mihomo 内核 ", Justify.Left),
+                Border = BoxBorder.Rounded,
+                BorderStyle = new Style(Color.Grey),
+                Padding = new Padding(1, 0, 1, 0)
+            });
+            AnsiConsole.WriteLine();
+            var custom = !string.IsNullOrWhiteSpace(settings.MihomoPath);
+            var actions = new List<string> { "检查配置", "在线更新", "指定内核文件" };
+            if (custom) actions.Add("恢复内置内核");
+            actions.Add("返回");
+            var pick = AnsiConsole.Prompt(new SelectionPrompt<string>()
+                .Title("[grey]内核[/]")
+                .WrapAround()
+                .HighlightStyle(new Style(foreground: Color.Black, background: Color.Yellow, decoration: Decoration.Bold))
+                .AddChoices(actions));
+            switch (pick)
+            {
+                case "返回": return;
+                case "检查配置":
+                    local.Service.Prepare(settings);
+                    Pause(await ConfigCheck.RunAsync(MihomoKernel.Resolve(settings.MihomoPath), local.Store));
+                    break;
+                case "在线更新": await UpdateKernel(settings, status, version); break;
+                case "指定内核文件": PickKernel(settings); break;
+                case "恢复内置内核":
+                    settings.MihomoPath = "";
+                    if (File.Exists(DownloadedKernel)) File.Delete(DownloadedKernel);
+                    Save(settings);
+                    break;
+            }
         }
-        Pause("");
+    }
+
+    private string DownloadedKernel => Path.Combine(local.Store.StoreDirectory, "kernel", "mihomo");
+
+    private string KernelSource(ClashProxySettings settings, string path)
+    {
+        if (string.IsNullOrWhiteSpace(settings.MihomoPath)) return path == MihomoKernel.Bundled() ? "内置" : "PATH";
+        return path == DownloadedKernel ? "在线更新" : "自定义";
+    }
+
+    // Markup for the live kernel process, or null when the service is down.
+    private static string? RunningKernel(ClashProxyStatus status, string configured)
+    {
+        if (!status.Running || status.MihomoPid is not int pid) return null;
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            var text = "[grey]pid " + pid + " · " + Size(process.WorkingSet64) + " · " + Uptime(DateTime.Now - process.StartTime) + "[/]";
+            return Runs(pid, configured) ? text : text + "  [yellow]重启后换内核[/]";
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return null; }
+    }
+
+    // /proc/self/fd gives the canonical path, so symlinked folders still match; a replaced binary reads "… (deleted)".
+    private static bool Runs(int pid, string path)
+    {
+        try
+        {
+            using var file = File.OpenHandle(path);
+            return File.ResolveLinkTarget("/proc/" + pid + "/exe", false)?.FullName
+                == File.ResolveLinkTarget("/proc/self/fd/" + file.DangerousGetHandle(), false)?.FullName;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; }
+    }
+
+    private void PickKernel(ClashProxySettings settings)
+    {
+        var path = Environment.ExpandEnvironmentVariables(Ask("mihomo 文件的绝对路径", settings.MihomoPath).Trim());
+        if (path.Length == 0 || path == settings.MihomoPath) return;
+        if (!File.Exists(path)) throw new InvalidOperationException("找不到 " + path);
+        MihomoKernel.EnsureExecutable(path);
+        var version = MihomoKernel.ParseVersion(MihomoKernel.VersionLine(path));
+        if (version.Length == 0) throw new InvalidOperationException(path + " 没有输出 mihomo 版本，没有保存。");
+        settings.MihomoPath = Path.GetFullPath(path);
+        AnsiConsole.MarkupLine("内核 [bold]{0}[/]", Markup.Escape(version));
+        Save(settings);
+    }
+
+    private async Task UpdateKernel(ClashProxySettings settings, ClashProxyStatus status, string current)
+    {
+        // Through our own HTTP port when it is up: the generated rules send GitHub via the relay group.
+        using var handler = status.Running ? new HttpClientHandler { Proxy = new WebProxy("http://127.0.0.1:" + settings.HttpPort) } : new HttpClientHandler();
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("codex-switch");
+        var tag = "";
+        await AnsiConsole.Status().StartAsync("查询 MetaCubeX/mihomo 最新版本", async _ =>
+        {
+            using var doc = JsonDocument.Parse(await http.GetStringAsync("https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"));
+            tag = doc.RootElement.TryGetProperty("tag_name", out var name) ? name.GetString() ?? "" : "";
+        });
+        if (tag.Length == 0) throw new InvalidOperationException("GitHub 没有返回最新版本号。");
+        if (tag == current) { Pause("已是最新 " + tag); return; }
+        var asset = MihomoKernel.ReleaseAsset(tag) ?? throw new InvalidOperationException("没有适合当前架构的 mihomo 发布包。");
+        if (!AnsiConsole.Confirm((current.Length == 0 ? "未知" : current) + " → " + tag + "，下载 " + asset + "？")) return;
+        var target = DownloadedKernel;
+        var temp = target + ".download";
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        await AnsiConsole.Status().StartAsync("下载 " + asset, async ctx =>
+        {
+            using var response = await http.GetAsync("https://github.com/MetaCubeX/mihomo/releases/download/" + tag + "/" + asset, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            var total = response.Content.Headers.ContentLength;
+            await using var source = await response.Content.ReadAsStreamAsync();
+            using var packed = new MemoryStream();
+            var chunk = new byte[81920];
+            int n;
+            while ((n = await source.ReadAsync(chunk)) > 0)
+            {
+                packed.Write(chunk, 0, n);
+                ctx.Status("下载 " + asset + "  " + Size(packed.Length) + (total is long all ? " / " + Size(all) : ""));
+            }
+            packed.Position = 0;
+            await using var gzip = new GZipStream(packed, CompressionMode.Decompress);
+            await using var file = File.Create(temp);
+            await gzip.CopyToAsync(file);
+        });
+        MihomoKernel.EnsureExecutable(temp);
+        var got = MihomoKernel.ParseVersion(MihomoKernel.VersionLine(temp));
+        if (got != tag)
+        {
+            File.Delete(temp);
+            throw new InvalidOperationException("下载的内核报告版本「" + got + "」，不是 " + tag + "，没有替换。");
+        }
+        // Rename over the old file: a running kernel keeps its inode, so this never hits ETXTBSY.
+        File.Move(temp, target, true);
+        settings.MihomoPath = target;
+        AnsiConsole.MarkupLine("内核已更新到 [bold]{0}[/]", Markup.Escape(tag));
+        Save(settings);
     }
 
     private void Boot(ClashProxySettings settings)
@@ -399,25 +538,29 @@ sealed class MihomoTui
         else Pause("已保存");
     }
 
-    private string Version(string kernel)
+    private string VersionLine(string path)
     {
-        if (kernelVersion != null) return kernelVersion;
-        try
-        {
-            var info = new ProcessStartInfo(kernel, "-v")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            using var process = Process.Start(info);
-            if (process == null) return kernelVersion = "";
-            if (!process.WaitForExit(3000)) return kernelVersion = "";
-            var line = (process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd()).Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-            return kernelVersion = line ?? "";
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException) { return kernelVersion = ""; }
+        var stamp = File.GetLastWriteTimeUtc(path);
+        if (versionCache is { } cached && cached.Path == path && cached.Stamp == stamp) return cached.Line;
+        var line = MihomoKernel.VersionLine(path);
+        versionCache = (path, stamp, line);
+        return line;
     }
+
+    private string VersionOf(string path)
+    {
+        var version = MihomoKernel.ParseVersion(VersionLine(path));
+        return version.Length == 0 ? "未知" : version;
+    }
+
+    private static string Size(long bytes) => bytes >= 1L << 30
+        ? (bytes / (double)(1L << 30)).ToString("0.00") + " GB"
+        : (bytes / (double)(1L << 20)).ToString("0.0") + " MB";
+
+    private static string Uptime(TimeSpan span) =>
+        span.TotalDays >= 1 ? (int)span.TotalDays + "d" + span.Hours + "h"
+        : span.TotalHours >= 1 ? span.Hours + "h" + span.Minutes + "m"
+        : span.Minutes + "m" + span.Seconds + "s";
 
     private static string ProcessLine(int? pid)
     {
@@ -425,9 +568,7 @@ sealed class MihomoTui
         try
         {
             using var process = Process.GetProcessById(value);
-            var mb = process.WorkingSet64 / 1024d / 1024d;
-            var up = DateTime.Now - process.StartTime;
-            return "pid " + value + "  内存 " + mb.ToString("0.0") + " MB  已运行 " + up.ToString(@"hh\:mm\:ss");
+            return "pid " + value + "  内存 " + Size(process.WorkingSet64) + "  已运行 " + Uptime(DateTime.Now - process.StartTime);
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return "进程已退出。"; }
     }

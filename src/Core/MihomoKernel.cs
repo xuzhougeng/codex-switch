@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace CodexSwitch.Core;
@@ -10,6 +12,14 @@ public static class MihomoKernel
         Architecture.Arm64 => "linux-arm64",
         Architecture.Arm => "linux-arm",
         _ => RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()
+    };
+
+    public static string? ReleaseAsset(string tag) => RuntimeInformation.ProcessArchitecture switch
+    {
+        Architecture.X64 => "mihomo-linux-amd64-compatible-" + tag + ".gz",
+        Architecture.Arm64 => "mihomo-linux-arm64-" + tag + ".gz",
+        Architecture.Arm => "mihomo-linux-armv7-" + tag + ".gz",
+        _ => null
     };
 
     public static string? Bundled(string? appDirectory = null)
@@ -53,5 +63,28 @@ public static class MihomoKernel
             if (next != mode) File.SetUnixFileMode(path, next);
         }
         catch (IOException) { }
+    }
+
+    public static string VersionLine(string path)
+    {
+        try
+        {
+            var info = new ProcessStartInfo(path, "-v") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            using var process = Process.Start(info);
+            if (process == null) return "";
+            if (!process.WaitForExit(3000)) { process.Kill(); return ""; }
+            var text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+            return text.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or Win32Exception) { return ""; }
+    }
+
+    // "Mihomo Meta v1.19.31 linux amd64 with go1.26.8 ..." -> "v1.19.31"; alpha builds give "alpha-xxxx".
+    public static string ParseVersion(string line)
+    {
+        var parts = (line ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var meta = Array.IndexOf(parts, "Meta");
+        if (meta >= 0 && meta + 1 < parts.Length) return parts[meta + 1];
+        return parts.FirstOrDefault(part => part.Length > 1 && part[0] == 'v' && char.IsDigit(part[1])) ?? "";
     }
 }

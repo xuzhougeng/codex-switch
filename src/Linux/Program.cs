@@ -59,7 +59,12 @@ static class Cli
         var status = local.Service.Status();
         Console.WriteLine(status.Detail);
         Console.WriteLine(MihomoTui.Chain(settings));
-        try { Console.WriteLine("内核 " + MihomoKernelResolve(settings.MihomoPath)); } catch (InvalidOperationException) { }
+        try
+        {
+            var kernel = CodexSwitch.Core.MihomoKernel.Resolve(settings.MihomoPath);
+            Console.WriteLine("内核 " + CodexSwitch.Core.MihomoKernel.ParseVersion(CodexSwitch.Core.MihomoKernel.VersionLine(kernel)) + "  " + kernel);
+        }
+        catch (InvalidOperationException) { }
         if (!status.Running) return 1;
         PrintExports(settings.HttpPort);
         return 0;
@@ -104,8 +109,6 @@ static class Cli
         Console.WriteLine("export http_proxy=http://127.0.0.1:" + port);
         Console.WriteLine("export https_proxy=http://127.0.0.1:" + port);
     }
-
-    private static string MihomoKernelResolve(string? path) => CodexSwitch.Core.MihomoKernel.Resolve(path);
 
     private static void Print(string path)
     {

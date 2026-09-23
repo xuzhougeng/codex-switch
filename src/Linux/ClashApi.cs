@@ -48,6 +48,15 @@ static class ClashApi
         throw new InvalidOperationException("切换第一跳失败：" + (string.IsNullOrWhiteSpace(text) ? response.StatusCode.ToString() : text));
     }
 
+    public static async Task<(long Up, long Down, int Count)> TrafficAsync(string controller, CancellationToken cancellationToken)
+    {
+        using var doc = await GetAsync(controller, "/connections", cancellationToken);
+        var root = doc.RootElement;
+        static long Total(JsonElement root, string name) => root.TryGetProperty(name, out var value) && value.TryGetInt64(out var n) ? n : 0;
+        var count = root.TryGetProperty("connections", out var items) && items.ValueKind == JsonValueKind.Array ? items.GetArrayLength() : 0;
+        return (Total(root, "uploadTotal"), Total(root, "downloadTotal"), count);
+    }
+
     public static async Task<string> ConnectionsAsync(string controller, CancellationToken cancellationToken)
     {
         using var doc = await GetAsync(controller, "/connections", cancellationToken);

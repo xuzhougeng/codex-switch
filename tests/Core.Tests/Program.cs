@@ -199,6 +199,9 @@ try
     File.WriteAllText(kernelFile, "");
     Check(MihomoKernel.Bundled(kernelDir) == Path.GetFullPath(kernelFile), "bundled kernel resolves from the app directory");
     Check(MihomoKernel.Resolve(null, kernelDir) == Path.GetFullPath(kernelFile), "resolve prefers the bundled kernel");
+    Check(MihomoKernel.ParseVersion("Mihomo Meta v1.19.31 linux amd64 with go1.26.8 Mon Nov 14 13:20:38 UTC 2026") == "v1.19.31", "kernel version comes from the token after Meta");
+    Check(MihomoKernel.ParseVersion("Mihomo Meta alpha-g1a2b3c linux amd64 with go1.26.8 Mon Nov 14") == "alpha-g1a2b3c", "alpha kernel keeps its build tag");
+    Check(MihomoKernel.ParseVersion("") == "" && MihomoKernel.VersionLine(kernelFile) == "", "an empty kernel file reports no version");
 
     await SocksLimiterChecks.Run();
     Console.WriteLine("PASS in-process limiter forwards through the first hop and times out the queue");

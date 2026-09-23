@@ -44,6 +44,8 @@ Linux 用终端界面管理 mihomo，形态接近 [ShellCrash](https://github.co
 
 官方 mihomo 内核放在 `src/Linux/kernel/`（当前 v1.19.31，GPL-3.0）。启动时优先用这份内核；配置里填了绝对路径时才改用别的。
 
+「内核」页显示版本、来源、路径，以及运行中内核的 pid、内存、运行时长和累计流量；换了内核但还没重启时会提示。页内可以检查配置（`mihomo -t`）、从 MetaCubeX 官方发布在线更新（服务运行时经本机 HTTP 端口下载，校验版本后存到 `~/.config/codex-switch/kernel/mihomo`）、指定内核文件，或恢复内置内核。
+
 ```bash
 bash scripts/build-linux.sh
 ./dist/linux-x64/codex-switch
