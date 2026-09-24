@@ -17,9 +17,12 @@ sealed class LocalService
     {
         if (!SystemdUnit.Available() || !File.Exists(SystemdUnit.UnitPath)) return;
         var text = File.ReadAllText(SystemdUnit.UnitPath);
-        if (!text.Contains("/.codex", StringComparison.Ordinal)) return;
         var executable = Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable)) return;
+        var staleHome = text.Contains("/.codex", StringComparison.Ordinal);
+        var missingRuntime = SystemdUnit.NeedsFramework(executable) && !text.Contains("DOTNET_ROOT=", StringComparison.Ordinal);
+        if (!staleHome && !missingRuntime) return;
+        if (missingRuntime && SystemdUnit.TryRuntimeRoot(executable) == null) return;
         SystemdUnit.Install(executable, Store.Home);
     }
 
@@ -70,7 +73,15 @@ sealed class LocalService
             status = Service.Status();
         }
         if (!status.Running)
-            throw new InvalidOperationException(status.Detail + "\n" + Tail(Store.ServiceLogPath) + "\n" + Tail(Store.MihomoLogPath));
+        {
+            var journal = SystemdUnit.RecentLog();
+            var detail = status.Detail == "未运行" && SystemdUnit.IsEnabled() && !SystemdUnit.IsActive()
+                ? "开机服务没有跑起来"
+                : status.Detail;
+            throw new InvalidOperationException(detail
+                + (journal.Length == 0 ? "" : "\n" + journal)
+                + "\n" + Tail(Store.ServiceLogPath) + "\n" + Tail(Store.MihomoLogPath));
+        }
         return status;
     }
 

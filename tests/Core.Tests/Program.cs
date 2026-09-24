@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexSwitch.Core;
+using CodexSwitch.Linux;
 
 static byte[] Auth(string email, string refresh = "original", string? accountID = null)
 {
@@ -207,6 +208,19 @@ try
     Check(MihomoKernel.ParseVersion("Mihomo Meta v1.19.31 linux amd64 with go1.26.8 Mon Nov 14 13:20:38 UTC 2026") == "v1.19.31", "kernel version comes from the token after Meta");
     Check(MihomoKernel.ParseVersion("Mihomo Meta alpha-g1a2b3c linux amd64 with go1.26.8 Mon Nov 14") == "alpha-g1a2b3c", "alpha kernel keeps its build tag");
     Check(MihomoKernel.ParseVersion("") == "" && MihomoKernel.VersionLine(kernelFile) == "", "an empty kernel file reports no version");
+
+    var bootUnit = SystemdUnit.Render("/opt/codex-switch", "/home/a/.config/codex-switch", "/home/a/.dotnet");
+    Check(bootUnit.Contains("Environment=DOTNET_ROOT=\"/home/a/.dotnet\"\nEnvironment=DOTNET_ROOT_" + SystemdUnit.RuntimeToken() + "=\"/home/a/.dotnet\""), "boot unit gives systemd the local .NET root");
+    Check(bootUnit.Contains("ExecStart=\"/opt/codex-switch\" serve --home \"/home/a/.config/codex-switch\""), "boot unit starts serve with the config home");
+    Check(!SystemdUnit.Render("/opt/codex-switch", "/home/a/.config/codex-switch", null).Contains("DOTNET_ROOT"), "a self-contained binary does not set DOTNET_ROOT");
+    var frameworkDir = Path.Combine(root, "framework-app");
+    Directory.CreateDirectory(frameworkDir);
+    var frameworkExe = Path.Combine(frameworkDir, "codex-switch");
+    File.WriteAllText(frameworkExe, "");
+    File.WriteAllText(frameworkExe + ".runtimeconfig.json", "{}");
+    Check(SystemdUnit.NeedsFramework(frameworkExe), "an apphost with a runtimeconfig needs the shared .NET runtime");
+    File.WriteAllText(Path.Combine(frameworkDir, "libhostfxr.so"), "");
+    Check(!SystemdUnit.NeedsFramework(frameworkExe), "a bundled libhostfxr means the binary is self-contained");
 
     var logs = LogTail.Parse([
         "orphan tail",
