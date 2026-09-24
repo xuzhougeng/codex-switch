@@ -132,6 +132,11 @@ try
     Check(built.LimiterJson.Contains("\"upstream\": \"38.121.23.194:33225\""), "limiter json keeps home SOCKS");
     Check(built.LimiterPython.Contains("max_concurrent"), "embedded limiter script is present");
     Reject(() => DialerProxyBuilder.Build(new DialerProxyInput("", "1.2.3.4", "1", "", "")), "empty relay rejected");
+    var probe = DialerProxyBuilder.BuildProbe(new DialerProxyInput("- name: one\n  type: ss\n- name: \"🇺🇸 US 01\"\n  type: ss\n", "38.121.23.194", "33225", "user", "123456"), "127.0.0.1:5555").Replace("\r\n", "\n");
+    Check(probe.Contains("  - name: codex-switch-chain-1\n    type: socks5\n    server: 38.121.23.194\n    port: 33225\n    username: \"user\"\n    password: \"123456\"\n    udp: false\n    dialer-proxy: \"🇺🇸 US 01\"\n"),
+        "probe reaches the home SOCKS through each relay in order");
+    Check(probe.Contains("external-controller: \"127.0.0.1:5555\"") && !probe.Contains("port: 1990") && !probe.Contains("socks-port"), "probe opens only its own controller");
+    Reject(() => DialerProxyBuilder.BuildProbe(new DialerProxyInput("- name: one\n  type: ss\n", "1.2.3.4", "x", "", ""), "127.0.0.1:5555"), "probe needs a numeric home port");
 
     var clashHome = Path.Combine(root, "clash-home");
     var clashStore = new ClashProxyStore(clashHome);

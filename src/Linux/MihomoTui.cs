@@ -199,17 +199,14 @@ sealed class MihomoTui
             throw new InvalidOperationException("先填写家宽，再测第一跳。");
         if (!names.Contains(settings.SelectedRelay)) settings.SelectedRelay = names[0];
         local.Store.Save(settings);
-        var status = local.Service.Status();
-        if (status.Running) local.Restart(settings);
-        else local.Start(settings);
         var bestName = "";
         var bestDelay = int.MaxValue;
         var finished = 0;
-        await AnsiConsole.Status().StartAsync("测第一跳延迟", async ctx =>
+        // Rank by the whole chain, not the first hop: a relay close to me can still be far from the US home.
+        await AnsiConsole.Status().StartAsync("测整条链路：本机 → 中转 → 家宽", async ctx =>
         {
-            await Parallel.ForEachAsync(names, new ParallelOptions { MaxDegreeOfParallelism = 6 }, async (name, token) =>
+            await MihomoDaemon.ProbeChainsAsync(local.Store, settings, 5000, (name, delay) =>
             {
-                var delay = await ClashApi.DelayAsync(settings.Controller, name, 2500, token);
                 lock (names)
                 {
                     finished++;
@@ -222,13 +219,13 @@ sealed class MihomoTui
                 }
             });
         });
-        if (bestName.Length == 0) throw new InvalidOperationException("没有节点在 2.5 秒内测通。订阅已经保存。");
+        if (bestName.Length == 0) throw new InvalidOperationException("没有节点在 5 秒内走通 本机 → 中转 → 家宽。订阅已经保存，先检查家宽地址和账号。");
         settings.SelectedRelay = bestName;
         local.Store.Save(settings);
-        var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
-        try { await ClashApi.SelectAsync(settings.Controller, group, bestName, CancellationToken.None); }
-        catch (InvalidOperationException) { }
-        Pause(bestName + "  " + bestDelay + " ms，已保存。下次启动会直接用它。");
+        var status = local.Service.Status();
+        if (status.Running) local.Restart(settings);
+        else local.Start(settings);
+        Pause(bestName + "  整条链路 " + bestDelay + " ms，已保存并生效。");
     }
 
     private void ChooseRelay(ClashProxySettings settings)

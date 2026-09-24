@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using CodexSwitch.Core;
@@ -121,6 +123,59 @@ static class MihomoDaemon
         }
         var text = ((await stdout) + (await stderr)).Trim();
         return (proc.ExitCode, text);
+    }
+
+    // Times me -> relay -> home for every relay in a throwaway mihomo (own dir, no inbound ports),
+    // so the running service, its cache.db and ai.yaml stay untouched. Calls done(relay, ms or -1) per relay.
+    public static async Task ProbeChainsAsync(ClashProxyStore store, ClashProxySettings settings, int timeoutMs, Action<string, int> done)
+    {
+        if (!OperatingSystem.IsLinux()) throw new InvalidOperationException("测速只在 Linux 上运行。");
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        var kernel = MihomoKernel.Resolve(settings.MihomoPath);
+        MihomoKernel.EnsureExecutable(kernel);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var controller = "127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
+        listener.Stop();
+        var dir = Path.Combine(store.WorkDirectory, "probe");
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        // 0700: the probe config carries the home password.
+        Directory.CreateDirectory(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var yaml = Path.Combine(dir, "probe.yaml");
+        File.WriteAllText(yaml, DialerProxyBuilder.BuildProbe(ClashProxyStore.ToInput(settings), controller));
+        using var proc = Build(kernel, store, "-d", dir, "-f", yaml);
+        proc.Start();
+        var stdout = proc.StandardOutput.ReadToEndAsync();
+        var stderr = proc.StandardError.ReadToEndAsync();
+        try
+        {
+            // The controller can answer before the proxies load, so wait until the last probe proxy exists.
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (true)
+            {
+                if (proc.HasExited)
+                    throw new InvalidOperationException("测速用的 mihomo 没有启动：\n" + ((await stdout) + (await stderr)).Trim());
+                try
+                {
+                    await ClashApi.GroupAsync(controller, DialerProxyBuilder.ProbeName(names.Count - 1), CancellationToken.None);
+                    break;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
+                {
+                    if (DateTime.UtcNow > deadline) throw new InvalidOperationException("测速用的 mihomo 10 秒内没有就绪。");
+                    await Task.Delay(100);
+                }
+            }
+            // ponytail: 4 at a time so the probe itself doesn't flood the home SOCKS the limiter protects; raise if big subscriptions feel slow.
+            await Parallel.ForEachAsync(Enumerable.Range(0, names.Count), new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (i, token) =>
+                done(names[i], await ClashApi.DelayAsync(controller, DialerProxyBuilder.ProbeName(i), timeoutMs, token)));
+        }
+        finally
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            await proc.WaitForExitAsync();
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
     }
 
     private static Process Build(string kernel, ClashProxyStore store, params string[] args)

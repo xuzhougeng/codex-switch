@@ -147,6 +147,44 @@ public static class DialerProxyBuilder
         return new DialerProxyFiles(yaml.ToString(), JsonSerializer.Serialize(limiter, Json) + "\n", LimiterPython());
     }
 
+    // Config for a throwaway mihomo that only serves the delay API: one home SOCKS per relay, dialed through that relay,
+    // so a delay test times the whole chain me -> relay -> home -> URL. Proxy i reaches the home via relay names[i].
+    // Kept out of ai.yaml so the home password stays with the limiter.
+    public static string BuildProbe(DialerProxyInput input, string controller)
+    {
+        var relay = NormalizeRelayYaml(input.RelayYaml);
+        var names = ExtractRelayNames(relay);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var homeServer = (input.HomeServer ?? "").Trim();
+        if (homeServer.Length == 0 || !int.TryParse((input.HomePort ?? "").Trim(), out var homePort) || homePort is < 1 or > 65535)
+            throw new InvalidOperationException("请填写美国家宽 SOCKS5 的地址和端口。");
+        var yaml = new StringBuilder();
+        yaml.AppendLine("log-level: warning");
+        yaml.AppendLine($"external-controller: {YamlScalar(controller)}");
+        yaml.AppendLine("ipv6: false");
+        yaml.AppendLine("proxies:");
+        yaml.AppendLine(IndentRelay(relay));
+        for (var i = 0; i < names.Count; i++)
+        {
+            yaml.AppendLine($"  - name: {ProbeName(i)}");
+            yaml.AppendLine("    type: socks5");
+            yaml.AppendLine($"    server: {YamlScalar(homeServer)}");
+            yaml.AppendLine($"    port: {homePort}");
+            if (!string.IsNullOrEmpty(input.HomeUsername))
+            {
+                yaml.AppendLine($"    username: {Quoted(input.HomeUsername)}");
+                yaml.AppendLine($"    password: {Quoted(input.HomePassword ?? "")}");
+            }
+            yaml.AppendLine("    udp: false");
+            yaml.AppendLine($"    dialer-proxy: {YamlScalar(names[i])}");
+        }
+        yaml.AppendLine("rules:");
+        yaml.AppendLine("  - MATCH,DIRECT");
+        return yaml.ToString();
+    }
+
+    public static string ProbeName(int index) => "codex-switch-chain-" + index;
+
     public static string LimiterPython()
     {
         using var stream = typeof(DialerProxyBuilder).Assembly.GetManifestResourceStream("CodexSwitch.Core.socks-limiter.py")
@@ -220,6 +258,9 @@ public static class DialerProxyBuilder
         if (value.Length == 0) return "\"\"";
         if (Regex.IsMatch(value, @"^[A-Za-z0-9_./-]+$") && !Regex.IsMatch(value, "^(true|false|null)$", RegexOptions.IgnoreCase))
             return value;
-        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        return Quoted(value);
     }
+
+    // Credentials are always quoted: a numeric password would otherwise load as a YAML number.
+    private static string Quoted(string value) => "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
 }
