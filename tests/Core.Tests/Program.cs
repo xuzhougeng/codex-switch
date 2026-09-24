@@ -203,6 +203,21 @@ try
     Check(MihomoKernel.ParseVersion("Mihomo Meta alpha-g1a2b3c linux amd64 with go1.26.8 Mon Nov 14") == "alpha-g1a2b3c", "alpha kernel keeps its build tag");
     Check(MihomoKernel.ParseVersion("") == "" && MihomoKernel.VersionLine(kernelFile) == "", "an empty kernel file reports no version");
 
+    var logs = LogTail.Parse([
+        "orphan tail",
+        "16:43:59 ERROR mihomo -t",
+        "time=\"2026-09-23T16:43:59.2+08:00\" level=error msg=\"yaml: \\\"line\\\" 14\"",
+        "configuration file ai.yaml test failed",
+        "",
+        "21:19:22 WARNING fail dest=a:443 IOException"]);
+    Check(logs.Count == 4 && logs[0] == new LogEntry("", "", "orphan tail"), "a log line before any timestamp stays on its own");
+    Check(logs[1] == new LogEntry("16:43:59", "ERROR", "mihomo -t"), "service log lines split into time, level, and message");
+    Check(logs[2] == new LogEntry("16:43:59", "ERROR", "yaml: \"line\" 14\nconfiguration file ai.yaml test failed"), "mihomo logfmt is unquoted and continuation lines join the entry above");
+    Check(logs[3].Level == "WARN", "WARNING normalizes to WARN");
+    var bigLog = Path.Combine(root, "big.log");
+    File.WriteAllText(bigLog, "first line is dropped\n" + string.Concat(Enumerable.Repeat("12:00:00 INFO x\n", 100)));
+    Check(LogTail.ReadLines(bigLog, 165) is { Count: 10 } tail && tail.All(line => line == "12:00:00 INFO x"), "log tail skips the partial first line");
+
     await SocksLimiterChecks.Run();
     Console.WriteLine("PASS in-process limiter forwards through the first hop and times out the queue");
 

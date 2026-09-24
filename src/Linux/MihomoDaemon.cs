@@ -46,7 +46,7 @@ static class MihomoDaemon
             }
             var mihomo = StartMihomo(kernel, store);
             WritePid(store.MihomoPidPath, mihomo.Id);
-            Log(store.ServiceLogPath, $"INFO kernel {kernel} pid {mihomo.Id} http {settings.HttpPort}");
+            Log(store.ServiceLogPath, $"INFO mihomo pid {mihomo.Id} http {settings.HttpPort} kernel {kernel}");
             try
             {
                 var exit = WaitExit(mihomo, cts.Token);
@@ -168,12 +168,15 @@ static class MihomoDaemon
         catch (IOException) { }
     }
 
+    private static readonly object LogLock = new();
+
+    // Limiter connections log from many tasks; unlocked appends seek to the same end and overwrite each other.
     private static void Log(string path, string line)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + " " + line + "\n");
+            lock (LogLock) File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + " " + line + "\n");
         }
         catch (IOException) { }
     }

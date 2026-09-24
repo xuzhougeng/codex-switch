@@ -26,14 +26,19 @@ sealed class MihomoTui
             var status = local.Service.Status();
             AnsiConsole.Clear();
             Render(settings, status);
-            var choices = new[] { "启动", "停止", "重启", "节点", "家宽 SOCKS5", "端口与限流", "切换第一跳", "运行详情", "日志", "内核", "Shell 命令", "开机启动", "退出" };
-            var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
-                .Title("[grey]选择[/]")
-                .PageSize(choices.Length)
+            var menu = new List<(string Label, string Hint)>();
+            if (status.Running) menu.AddRange([("重启", "应用改过的配置"), ("停止", "")]);
+            else menu.Add(("启动", "后台运行 mihomo 和限流"));
+            menu.AddRange([("节点", "订阅 · 测速 · 手选第一跳"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
+            if (status.Running) menu.AddRange([("切换第一跳", "临时切换，不写入配置"), ("运行详情", "进程与当前连接")]);
+            menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
+                ("开机启动", "systemd 用户服务"), ("退出", "")]);
+            var choice = AnsiConsole.Prompt(new SelectionPrompt<(string Label, string Hint)>()
+                .PageSize(menu.Count)
                 .WrapAround()
-                .HighlightStyle(new Style(foreground: Color.Black, background: Color.Yellow, decoration: Decoration.Bold))
-                .MoreChoicesText("[grey]↑↓ 还有选项[/]")
-                .AddChoices(choices));
+                .HighlightStyle(Highlight)
+                .UseConverter(item => Markup.Escape(item.Label) + new string(' ', 14 - item.Label.GetCellWidth()) + "[grey62]" + item.Hint + "[/]")
+                .AddChoices(menu)).Label;
             if (choice == "退出") return 0;
             try
             {
@@ -70,68 +75,51 @@ sealed class MihomoTui
             + " → " + home;
     }
 
+    // One row per hop in chain order, so the dashboard reads top to bottom and fits an 80-column terminal.
     private void Render(ClashProxySettings settings, ClashProxyStatus status)
     {
-        var home = string.IsNullOrWhiteSpace(settings.HomeServer)
-            ? "[grey]未填写[/]"
-            : "[bold]" + Markup.Escape(settings.HomeServer + ":" + settings.HomePort) + "[/]";
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "";
-        var nodes = names.Count == 0
-            ? "[grey]先填订阅[/]"
-            : "[bold]" + Markup.Escape(current) + "[/]  [grey]订阅共 " + names.Count + " 个[/]";
-        var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "[grey]关[/]";
-        var state = status.Running ? "[green]●[/] 运行中" : "[yellow]○[/] 未运行";
-        var kernel = KernelLine(settings, status);
+        var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "关";
         var pace = ReadPace(status);
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().PadRight(3))
+            .AddColumn(new GridColumn().NoWrap().PadRight(3))
+            .AddColumn();
+        void Row(string label, string value, string detail) =>
+            grid.AddRow(new Markup(label, Muted), new Markup(value), new Markup(detail, Muted));
 
-        var hops = new Table().Border(TableBorder.None).HideHeaders().Expand();
-        hops.AddColumns(new TableColumn(""), new TableColumn(""), new TableColumn(""), new TableColumn(""));
-        hops.AddRow(
-            new Markup("[grey]客户端[/]"),
-            new Markup("[grey]限流[/]"),
-            new Markup("[grey]一跳[/]"),
-            new Markup("[grey]家宽[/]"));
-        hops.AddRow(
-            new Markup("[bold]" + Markup.Escape("127.0.0.1:" + settings.HttpPort) + "[/]"),
-            new Markup("[bold]" + Markup.Escape(settings.LimiterListen) + "[/]"),
-            new Markup("[bold]" + Markup.Escape("127.0.0.1:" + settings.SocksPort) + "[/]"),
-            new Markup(home));
-
-        var meta = "[grey]并发[/] " + settings.MaxConcurrent
-            + "   [grey]间隔[/] " + settings.DialIntervalMs + " ms"
-            + "   [grey]排队[/] " + settings.QueueWaitS + " s"
-            + "   [grey]控制[/] " + Markup.Escape(settings.Controller)
-            + (pace == null ? "" : "   " + pace);
-        var body = new Rows(
-            new Markup(state + "    [grey]开机[/] " + boot),
-            hops,
-            new Markup(meta),
-            new Markup("[grey]节点[/] " + nodes),
-            new Markup(kernel));
-        AnsiConsole.Write(new Panel(body)
-        {
-            Header = new PanelHeader(" mihomo ", Justify.Left),
-            Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.Grey),
-            Padding = new Padding(1, 0, 1, 0)
-        });
-        AnsiConsole.WriteLine();
-    }
-
-    private string KernelLine(ClashProxySettings settings, ClashProxyStatus status)
-    {
+        Row("状态", status.Running ? "[bold green]● 运行中[/]" : "[bold yellow]○ 未运行[/]",
+            (pace == null ? "" : pace + " · ") + "开机自启 " + boot);
+        grid.AddEmptyRow();
+        Row("入口", Markup.Escape("127.0.0.1:" + settings.HttpPort), "Codex / Claude 的 HTTP 代理");
+        Row("限流", Markup.Escape(settings.LimiterListen),
+            "并发 " + settings.MaxConcurrent + " · 间隔 " + settings.DialIntervalMs + " ms · 排队 " + settings.QueueWaitS + " s");
+        Row("一跳", Markup.Escape("127.0.0.1:" + settings.SocksPort), names.Count == 0
+            ? "[yellow]先填订阅[/]"
+            : "[bold default]" + Markup.Escape(Plain(current)) + "[/] · 订阅 " + names.Count + " 个");
+        Row("家宽", string.IsNullOrWhiteSpace(settings.HomeServer)
+            ? "[yellow]未填写[/]"
+            : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), "SOCKS5");
+        grid.AddEmptyRow();
         try
         {
             var path = MihomoKernel.Resolve(settings.MihomoPath);
-            var line = "[grey]内核[/] [bold]" + Markup.Escape(VersionOf(path)) + "[/] [grey]" + KernelSource(settings, path) + "[/]";
-            var running = RunningKernel(status, path);
-            return running == null ? line : line + "   " + running;
+            Row("内核", "[bold]" + Markup.Escape(VersionOf(path)) + "[/] [grey62]" + KernelSource(settings, path) + "[/]", RunningKernel(status, path) ?? "");
         }
         catch (InvalidOperationException ex)
         {
-            return "[yellow]" + Markup.Escape(ex.Message) + "[/]";
+            Row("内核", "[yellow]未找到[/]", Markup.Escape(ex.Message));
         }
+        Row("控制", Markup.Escape(settings.Controller), "mihomo API");
+        AnsiConsole.Write(new Panel(grid)
+        {
+            Header = new PanelHeader("[bold yellow] mihomo [/]", Justify.Left),
+            Border = BoxBorder.Rounded,
+            BorderStyle = new Style(Color.Grey42),
+            Padding = new Padding(2, 1, 2, 1)
+        });
+        AnsiConsole.WriteLine();
     }
 
     private string? ReadPace(ClashProxyStatus status)
@@ -143,7 +131,7 @@ sealed class MihomoTui
             if (!File.Exists(path)) return null;
             using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
             var root = doc.RootElement;
-            return "[grey]活动[/] " + root.GetProperty("active").GetInt32() + "   [grey]等待[/] " + root.GetProperty("waiting").GetInt32();
+            return "活动 " + root.GetProperty("active").GetInt32() + " · 等待 " + root.GetProperty("waiting").GetInt32();
         }
         catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or KeyNotFoundException or InvalidOperationException)
         {
@@ -169,9 +157,9 @@ sealed class MihomoTui
         var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "未选择";
         var url = string.IsNullOrWhiteSpace(settings.SubscriptionUrl) ? "未填写" : settings.SubscriptionUrl;
         AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
-        AnsiConsole.MarkupLine("[grey]{0}[/]", Markup.Escape(url));
+        AnsiConsole.MarkupLine("[grey62]{0}[/]", Markup.Escape(url));
         var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
-            .Title("[grey]订阅里的节点[/]")
+            .Title("[grey62]订阅里的节点[/]")
             .AddChoices("测速选择第一跳", "填写订阅", "刷新订阅", "手动选择", "返回"));
         if (choice == "返回") return;
         if (choice == "填写订阅") await ReplaceSubscription(settings);
@@ -256,7 +244,7 @@ sealed class MihomoTui
         var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
             .Title("选择第一跳")
             .PageSize(Math.Min(12, names.Count + 1))
-            .MoreChoicesText("[grey]↑↓ 还有节点[/]")
+            .MoreChoicesText("[grey62]↑↓ 还有节点[/]")
             .AddChoices(names.Append("返回")));
         if (choice == "返回") return;
         settings.SelectedRelay = choice;
@@ -266,13 +254,13 @@ sealed class MihomoTui
     private void Home(ClashProxySettings settings)
     {
         AnsiConsole.Write(new Panel(new Markup(
-            "[grey]填供应商给的 SOCKS5，不是街道地址。[/]\n" +
+            "[grey62]填供应商给的 SOCKS5，不是街道地址。[/]\n" +
             "整行粘贴  [bold]socks5://用户:密码@203.0.113.10:1080[/]\n" +
             "或只填主机  [bold]203.0.113.10[/]，再补端口和账号"))
         {
             Header = new PanelHeader(" 美国家宽 ", Justify.Left),
             Border = BoxBorder.Rounded,
-            BorderStyle = new Style(Color.Grey),
+            BorderStyle = new Style(Color.Grey42),
             Padding = new Padding(1, 0, 1, 0)
         });
         var typed = Ask("主机，或整行 socks5://…", settings.HomeServer);
@@ -333,17 +321,74 @@ sealed class MihomoTui
         Pause("");
     }
 
+    // One log per tab, newest at the bottom, trimmed to the window so the tabs and keys never scroll away.
     private void Logs()
     {
-        foreach (var path in new[] { local.Store.LimiterLogPath, local.Store.MihomoLogPath, local.Store.ServiceLogPath })
+        var sources = new[] { ("服务", local.Store.ServiceLogPath), ("限流", local.Store.LimiterLogPath), ("mihomo", local.Store.MihomoLogPath) };
+        var tab = 0;
+        var problemsOnly = false;
+        while (true)
         {
-            AnsiConsole.MarkupLine("[grey]" + Markup.Escape(path) + "[/]");
-            if (!File.Exists(path)) { AnsiConsole.WriteLine("(空)"); continue; }
-            foreach (var line in File.ReadAllLines(path).TakeLast(25)) AnsiConsole.WriteLine(line);
-            AnsiConsole.WriteLine();
+            var (_, path) = sources[tab];
+            var entries = File.Exists(path) ? LogTail.Parse(LogTail.ReadLines(path)) : [];
+            var problems = entries.Where(e => e.Level is "WARN" or "ERROR").ToList();
+            AnsiConsole.Clear();
+            AnsiConsole.MarkupLine(string.Join(" ", sources.Select((s, i) => i == tab ? "[black on yellow bold] " + s.Item1 + " [/]" : "[grey62] " + s.Item1 + " [/]"))
+                + "  [grey42]" + Markup.Escape(Tilde(path)) + "[/]");
+            AnsiConsole.Write(new Rule().RuleStyle(Color.Grey42));
+            AnsiConsole.Write(LogGrid(problemsOnly ? problems : entries, Math.Max(5, Console.WindowHeight - 5), problemsOnly));
+            AnsiConsole.Write(new Rule().RuleStyle(Color.Grey42));
+            AnsiConsole.MarkupLine("[grey62]←→ 切换   w " + (problemsOnly ? "显示全部" : "只看警告和错误（" + problems.Count + "）") + "   r 刷新   q 返回[/]");
+            switch (Console.ReadKey(true).Key)
+            {
+                case ConsoleKey.LeftArrow: tab = (tab + sources.Length - 1) % sources.Length; break;
+                case ConsoleKey.RightArrow or ConsoleKey.Tab: tab = (tab + 1) % sources.Length; break;
+                case ConsoleKey.W: problemsOnly = !problemsOnly; break;
+                case ConsoleKey.Q or ConsoleKey.Escape or ConsoleKey.Enter: return;
+            }
         }
-        Pause("");
     }
+
+    private static Spectre.Console.Rendering.IRenderable LogGrid(List<LogEntry> entries, int rows, bool problemsOnly)
+    {
+        if (entries.Count == 0) return new Markup(problemsOnly ? "[green]最近没有警告或错误[/]" : "[grey62](空)[/]");
+        Grid Build(int skip)
+        {
+            var grid = new Grid()
+                .AddColumn(new GridColumn().NoWrap().PadRight(1))
+                .AddColumn(new GridColumn().NoWrap().PadRight(1))
+                .AddColumn();
+            foreach (var entry in entries.Skip(skip))
+                grid.AddRow(
+                    new Text(entry.Time, Muted),
+                    new Markup(entry.Level switch { "ERROR" => "[bold red]ERROR[/]", "WARN" => "[yellow]WARN[/]", var level => "[grey62]" + Markup.Escape(level) + "[/]" }),
+                    new Text(Tidy(entry.Message), entry.Level == "ERROR" ? new Style(Color.Red) : Style.Plain));
+            return grid;
+        }
+        var skip = Math.Max(0, entries.Count - rows);
+        var shown = Build(skip);
+        // Long messages wrap onto extra rows; drop the oldest until the page fits.
+        while (skip < entries.Count - 1 && shown.GetSegments(AnsiConsole.Console).Sum(s => s.Text.Count(c => c == '\n')) > rows)
+            shown = Build(++skip);
+        return shown;
+    }
+
+    // Display only: drop the loopback client port mihomo prints on every line, flags, and the home prefix.
+    private static string Tidy(string message) =>
+        Plain(Tilde(System.Text.RegularExpressions.Regex.Replace(message, @"127\.0\.0\.1:\d+ --> ", "")));
+
+    private static string Tilde(string path)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return path.Replace(home + "/", "~/");
+    }
+
+    // Regional-indicator flags render as stray letters in many terminals and break column widths.
+    private static string Plain(string name) =>
+        System.Text.RegularExpressions.Regex.Replace(name, @"(\uD83C[\uDDE6-\uDDFF])+\s*", "").Trim();
+
+    private static readonly Style Muted = new(Color.Grey62);
+    private static readonly Style Highlight = new(foreground: Color.Black, background: Color.Yellow, decoration: Decoration.Bold);
 
     private async Task Kernel()
     {
@@ -352,7 +397,7 @@ sealed class MihomoTui
             var settings = local.Load();
             var status = local.Service.Status();
             var grid = new Grid().AddColumn(new GridColumn().NoWrap().PadRight(2)).AddColumn();
-            void Row(string label, string value) => grid.AddRow(new Markup("[grey]" + label + "[/]"), new Markup(value));
+            void Row(string label, string value) => grid.AddRow(new Markup("[grey62]" + label + "[/]"), new Markup(value));
             var version = "";
             try
             {
@@ -361,10 +406,10 @@ sealed class MihomoTui
                 var line = VersionLine(path);
                 version = MihomoKernel.ParseVersion(line);
                 var build = version.Length == 0 ? line : line[(line.IndexOf(version, StringComparison.Ordinal) + version.Length)..].Trim();
-                Row("版本", "[bold]" + Markup.Escape(version.Length == 0 ? "未知" : version) + "[/]  [grey]" + Markup.Escape(build) + "[/]");
+                Row("版本", "[bold]" + Markup.Escape(version.Length == 0 ? "未知" : version) + "[/]  [grey62]" + Markup.Escape(build) + "[/]");
                 Row("来源", KernelSource(settings, path));
                 Row("路径", Markup.Escape(path));
-                Row("进程", RunningKernel(status, path) ?? "[grey]未运行[/]");
+                Row("进程", RunningKernel(status, path) ?? "[grey62]未运行[/]");
             }
             catch (InvalidOperationException ex)
             {
@@ -375,7 +420,7 @@ sealed class MihomoTui
                 try
                 {
                     var (up, down, count) = await ClashApi.TrafficAsync(settings.Controller, CancellationToken.None);
-                    Row("流量", "↑ " + Size(up) + "  ↓ " + Size(down) + "  [grey]" + count + " 条连接[/]");
+                    Row("流量", "↑ " + Size(up) + "  ↓ " + Size(down) + "  [grey62]" + count + " 条连接[/]");
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException) { }
             }
@@ -384,7 +429,7 @@ sealed class MihomoTui
             {
                 Header = new PanelHeader(" mihomo 内核 ", Justify.Left),
                 Border = BoxBorder.Rounded,
-                BorderStyle = new Style(Color.Grey),
+                BorderStyle = new Style(Color.Grey42),
                 Padding = new Padding(1, 0, 1, 0)
             });
             AnsiConsole.WriteLine();
@@ -393,9 +438,9 @@ sealed class MihomoTui
             if (custom) actions.Add("恢复内置内核");
             actions.Add("返回");
             var pick = AnsiConsole.Prompt(new SelectionPrompt<string>()
-                .Title("[grey]内核[/]")
+                .Title("[grey62]内核[/]")
                 .WrapAround()
-                .HighlightStyle(new Style(foreground: Color.Black, background: Color.Yellow, decoration: Decoration.Bold))
+                .HighlightStyle(Highlight)
                 .AddChoices(actions));
             switch (pick)
             {
@@ -430,7 +475,7 @@ sealed class MihomoTui
         try
         {
             using var process = Process.GetProcessById(pid);
-            var text = "[grey]pid " + pid + " · " + Size(process.WorkingSet64) + " · " + Uptime(DateTime.Now - process.StartTime) + "[/]";
+            var text = "[grey62]pid " + pid + " · " + Size(process.WorkingSet64) + " · " + Uptime(DateTime.Now - process.StartTime) + "[/]";
             return Runs(pid, configured) ? text : text + "  [yellow]重启后换内核[/]";
         }
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return null; }
@@ -587,7 +632,7 @@ sealed class MihomoTui
     private static void Pause(string message)
     {
         if (message.Length > 0) AnsiConsole.WriteLine(message.Length > 2000 ? message[..2000] : message);
-        AnsiConsole.MarkupLine("[grey]回车继续[/]");
+        AnsiConsole.MarkupLine("[grey62]回车继续[/]");
         Console.ReadLine();
     }
 }
