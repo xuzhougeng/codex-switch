@@ -33,12 +33,11 @@ sealed class MihomoTui
             if (status.Running) menu.AddRange([("切换第一跳", "临时切换，不写入配置"), ("运行详情", "进程与当前连接")]);
             menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
                 ("开机启动", "systemd 用户服务"), ("退出", "")]);
-            var choice = AnsiConsole.Prompt(new SelectionPrompt<(string Label, string Hint)>()
-                .PageSize(menu.Count)
-                .WrapAround()
-                .HighlightStyle(Highlight)
-                .UseConverter(item => Markup.Escape(item.Label) + new string(' ', 14 - item.Label.GetCellWidth()) + "[grey62]" + item.Hint + "[/]")
-                .AddChoices(menu)).Label;
+            var labels = menu.Select(item => Markup.Escape(item.Label)
+                + new string(' ', Math.Max(0, 14 - item.Label.GetCellWidth())) + "[grey62]" + item.Hint + "[/]").ToList();
+            var index = Pick(labels, pageSize: labels.Count, wrap: true, back: false);
+            if (index < 0) continue;
+            var choice = menu[index].Label;
             if (choice == "退出") return 0;
             try
             {
@@ -57,6 +56,9 @@ sealed class MihomoTui
                     case "Shell 命令": Pause(ShellSetup.Install()); break;
                     case "开机启动": Boot(settings); break;
                 }
+            }
+            catch (Back)
+            {
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException
                 or JsonException or Win32Exception or UnauthorizedAccessException)
@@ -158,13 +160,12 @@ sealed class MihomoTui
         var url = string.IsNullOrWhiteSpace(settings.SubscriptionUrl) ? "未填写" : settings.SubscriptionUrl;
         AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
         AnsiConsole.MarkupLine("[grey62]{0}[/]", Markup.Escape(url));
-        var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
-            .Title("[grey62]订阅里的节点[/]")
-            .AddChoices("测速选择第一跳", "填写订阅", "刷新订阅", "手动选择", "返回"));
-        if (choice == "返回") return;
-        if (choice == "填写订阅") await ReplaceSubscription(settings);
-        else if (choice == "刷新订阅") await RefreshSubscription(settings);
-        else if (choice == "手动选择") ChooseRelay(settings);
+        var options = new[] { "测速选择第一跳", "填写订阅", "刷新订阅", "手动选择", "返回" };
+        var index = Pick(options, title: "[grey62]订阅里的节点[/]");
+        if (index < 0 || options[index] == "返回") return;
+        if (options[index] == "填写订阅") await ReplaceSubscription(settings);
+        else if (options[index] == "刷新订阅") await RefreshSubscription(settings);
+        else if (options[index] == "手动选择") ChooseRelay(settings);
         else await ProbeAndSelect(settings);
     }
 
@@ -238,13 +239,11 @@ sealed class MihomoTui
             Save(settings);
             return;
         }
-        var choice = AnsiConsole.Prompt(new SelectionPrompt<string>()
-            .Title("选择第一跳")
-            .PageSize(Math.Min(12, names.Count + 1))
-            .MoreChoicesText("[grey62]↑↓ 还有节点[/]")
-            .AddChoices(names.Append("返回")));
-        if (choice == "返回") return;
-        settings.SelectedRelay = choice;
+        var options = names.Append("返回").ToList();
+        var index = Pick(options.Select(Markup.Escape).ToList(), title: "选择第一跳",
+            pageSize: Math.Min(12, options.Count), more: "[grey62]↑↓ 还有节点[/]");
+        if (index < 0 || options[index] == "返回") return;
+        settings.SelectedRelay = options[index];
         Save(settings);
     }
 
@@ -270,9 +269,9 @@ sealed class MihomoTui
         else settings.HomeUsername = Ask("用户名，没有就回车", settings.HomeUsername);
         if (endpoint.Password != null) settings.HomePassword = endpoint.Password;
         else if (string.IsNullOrEmpty(settings.HomePassword))
-            settings.HomePassword = AnsiConsole.Prompt(new TextPrompt<string>("密码，没有就回车").Secret().AllowEmpty());
-        else if (AnsiConsole.Confirm("更换已保存的密码？", false))
-            settings.HomePassword = AnsiConsole.Prompt(new TextPrompt<string>("新密码，回车则清空").Secret().AllowEmpty());
+            settings.HomePassword = AskSecret("密码，没有就回车");
+        else if (Confirm("更换已保存的密码？", false))
+            settings.HomePassword = AskSecret("新密码，回车则清空");
         if (!int.TryParse(settings.HomePort, out var port) || port is < 1 or > 65535)
             throw new InvalidOperationException("端口需要是 1 到 65535 的数字。");
         var userShown = string.IsNullOrEmpty(settings.HomeUsername) ? "无" : settings.HomeUsername;
@@ -302,12 +301,11 @@ sealed class MihomoTui
         var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
         var info = await ClashApi.GroupAsync(settings.Controller, group, CancellationToken.None);
         if (info.All.Count == 0) throw new InvalidOperationException("控制端口没有返回可选节点。");
-        var pick = AnsiConsole.Prompt(new SelectionPrompt<string>()
-            .Title("当前 " + info.Now)
-            .AddChoices(info.All.Append("返回")));
-        if (pick == "返回") return;
-        await ClashApi.SelectAsync(settings.Controller, group, pick, CancellationToken.None);
-        Pause("第一跳已切到 " + pick);
+        var options = info.All.Append("返回").ToList();
+        var index = Pick(options.Select(Markup.Escape).ToList(), title: "当前 " + Markup.Escape(info.Now));
+        if (index < 0 || options[index] == "返回") return;
+        await ClashApi.SelectAsync(settings.Controller, group, options[index], CancellationToken.None);
+        Pause("第一跳已切到 " + options[index]);
     }
 
     private async Task Details(ClashProxySettings settings, ClashProxyStatus status)
@@ -434,25 +432,27 @@ sealed class MihomoTui
             var actions = new List<string> { "检查配置", "在线更新", "指定内核文件" };
             if (custom) actions.Add("恢复内置内核");
             actions.Add("返回");
-            var pick = AnsiConsole.Prompt(new SelectionPrompt<string>()
-                .Title("[grey62]内核[/]")
-                .WrapAround()
-                .HighlightStyle(Highlight)
-                .AddChoices(actions));
-            switch (pick)
+            var index = Pick(actions, title: "[grey62]内核[/]", wrap: true);
+            if (index < 0 || actions[index] == "返回") return;
+            try
             {
-                case "返回": return;
-                case "检查配置":
-                    local.Service.Prepare(settings);
-                    Pause(await ConfigCheck.RunAsync(MihomoKernel.Resolve(settings.MihomoPath), local.Store));
-                    break;
-                case "在线更新": await UpdateKernel(settings, status, version); break;
-                case "指定内核文件": PickKernel(settings); break;
-                case "恢复内置内核":
-                    settings.MihomoPath = "";
-                    if (File.Exists(DownloadedKernel)) File.Delete(DownloadedKernel);
-                    Save(settings);
-                    break;
+                switch (actions[index])
+                {
+                    case "检查配置":
+                        local.Service.Prepare(settings);
+                        Pause(await ConfigCheck.RunAsync(MihomoKernel.Resolve(settings.MihomoPath), local.Store));
+                        break;
+                    case "在线更新": await UpdateKernel(settings, status, version); break;
+                    case "指定内核文件": PickKernel(settings); break;
+                    case "恢复内置内核":
+                        settings.MihomoPath = "";
+                        if (File.Exists(DownloadedKernel)) File.Delete(DownloadedKernel);
+                        Save(settings);
+                        break;
+                }
+            }
+            catch (Back)
+            {
             }
         }
     }
@@ -518,7 +518,7 @@ sealed class MihomoTui
         if (tag.Length == 0) throw new InvalidOperationException("GitHub 没有返回最新版本号。");
         if (tag == current) { Pause("已是最新 " + tag); return; }
         var asset = MihomoKernel.ReleaseAsset(tag) ?? throw new InvalidOperationException("没有适合当前架构的 mihomo 发布包。");
-        if (!AnsiConsole.Confirm((current.Length == 0 ? "未知" : current) + " → " + tag + "，下载 " + asset + "？")) return;
+        if (!Confirm((current.Length == 0 ? "未知" : current) + " → " + tag + "，下载 " + asset + "？")) return;
         var target = DownloadedKernel;
         var temp = target + ".download";
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -560,13 +560,13 @@ sealed class MihomoTui
         if (!SystemdUnit.Available()) throw new InvalidOperationException("没有找到 systemctl。");
         if (SystemdUnit.IsEnabled())
         {
-            if (!AnsiConsole.Confirm("取消开机启动并停止服务？")) return;
+            if (!Confirm("取消开机启动并停止服务？")) return;
             SystemdUnit.Remove();
             local.Service.Stop();
             Pause("已取消开机启动");
             return;
         }
-        if (!AnsiConsole.Confirm("写入用户级 systemd 并现在启动？")) return;
+        if (!Confirm("写入用户级 systemd 并现在启动？")) return;
         local.Service.Check(settings);
         local.InstallBoot();
         Pause("已启用 " + SystemdUnit.Name);
@@ -575,7 +575,7 @@ sealed class MihomoTui
     private void Save(ClashProxySettings settings)
     {
         local.Store.Save(settings);
-        if (local.Service.Status().Running && AnsiConsole.Confirm("配置已保存。现在重启？"))
+        if (local.Service.Status().Running && Confirm("配置已保存。现在重启？"))
             Pause(local.Restart(settings).Detail);
         else Pause("已保存");
     }
@@ -615,22 +615,166 @@ sealed class MihomoTui
         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { return "进程已退出。"; }
     }
 
+    private const string BackHint = "[grey42]esc 返回[/]";
+
+    // Escape cancels the whole form. Callers reload settings, so fields already typed are not saved.
+    private sealed class Back : Exception { }
+
     private static string Ask(string label, string current)
     {
-        var prompt = new TextPrompt<string>(label).AllowEmpty();
-        if (!string.IsNullOrEmpty(current)) prompt.DefaultValue(current);
-        return AnsiConsole.Prompt(prompt);
+        var hasDefault = !string.IsNullOrEmpty(current);
+        WritePrompt(label, hasDefault ? current : null);
+        var input = ReadLine();
+        if (input is null) throw new Back();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            if (hasDefault) AnsiConsole.Write(current);
+            AnsiConsole.WriteLine();
+            return hasDefault ? current : "";
+        }
+        AnsiConsole.WriteLine();
+        return input;
     }
 
-    private static int AskInt(string label, int current) =>
-        AnsiConsole.Prompt(new TextPrompt<int>(label).DefaultValue(current)
-            .Validate(value => value is >= 0 and <= 65535 ? ValidationResult.Success() : ValidationResult.Error("0-65535")));
+    private static string AskSecret(string label)
+    {
+        AnsiConsole.Markup(BackHint + "  " + Markup.Escape(label.TrimEnd()) + " ");
+        var input = ReadLine(secret: true);
+        if (input is null) throw new Back();
+        AnsiConsole.WriteLine();
+        return input;
+    }
+
+    private static int AskInt(string label, int current)
+    {
+        while (true)
+        {
+            WritePrompt(label, current.ToString());
+            var input = ReadLine();
+            if (input is null) throw new Back();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                AnsiConsole.Write(current.ToString());
+                AnsiConsole.WriteLine();
+                return current;
+            }
+            AnsiConsole.WriteLine();
+            if (int.TryParse(input.Trim(), out var value) && value is >= 0 and <= 65535) return value;
+            AnsiConsole.MarkupLine("0-65535");
+        }
+    }
+
+    private static bool Confirm(string message, bool yes = true)
+    {
+        while (true)
+        {
+            AnsiConsole.Markup(Markup.Escape(message.TrimEnd()) + " [blue][[y/n]][/] [green](" + (yes ? "y" : "n") + ")[/]: ");
+            var input = ReadLine();
+            if (input is null) return false;
+            AnsiConsole.WriteLine();
+            if (string.IsNullOrWhiteSpace(input)) return yes;
+            if (input.Equals("y", StringComparison.OrdinalIgnoreCase)) return true;
+            if (input.Equals("n", StringComparison.OrdinalIgnoreCase)) return false;
+            AnsiConsole.MarkupLine("请输入 y 或 n");
+        }
+    }
+
+    private static void WritePrompt(string label, string? current)
+    {
+        var text = BackHint + "  " + Markup.Escape(label.TrimEnd());
+        if (!string.IsNullOrEmpty(current)) text += " [green](" + Markup.Escape(current) + ")[/]:";
+        AnsiConsole.Markup(text + " ");
+    }
+
+    // null means Escape. A pasted line arrives as a burst of keys, same as Spectre's reader.
+    private static string? ReadLine(bool secret = false)
+    {
+        var text = "";
+        while (true)
+        {
+            var key = Console.ReadKey(true);
+            if (key.Key == ConsoleKey.Escape)
+            {
+                AnsiConsole.WriteLine();
+                return null;
+            }
+            if (key.Key == ConsoleKey.Enter) return text;
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (text.Length == 0) continue;
+                var cut = text.Length >= 2 && char.IsSurrogatePair(text, text.Length - 2) ? 2 : 1;
+                var width = Math.Max(1, text[^cut..].GetCellWidth());
+                text = text[..^cut];
+                AnsiConsole.Write(new string('\b', width) + new string(' ', width) + new string('\b', width));
+                continue;
+            }
+            if (char.IsControl(key.KeyChar)) continue;
+            text += key.KeyChar;
+            AnsiConsole.Write(secret ? "*" : key.KeyChar.ToString());
+        }
+    }
+
+    // Choices are markup. The highlighted row is plain, black on yellow, matching the old selection prompt.
+    private static int Pick(IReadOnlyList<string> choices, string? title = null, int pageSize = 10, bool wrap = false, string? more = null, bool back = true)
+    {
+        var size = pageSize <= 0 ? choices.Count : Math.Min(pageSize, choices.Count);
+        var cursor = 0;
+        var window = 0;
+        return AnsiConsole.Live(Menu(choices, cursor, window, size, title, more, back))
+            .AutoClear(true)
+            .Overflow(VerticalOverflow.Visible)
+            .Start(ctx =>
+            {
+                ctx.Refresh();
+                while (true)
+                {
+                    var key = Console.ReadKey(true);
+                    if (back && key.Key == ConsoleKey.Escape) return -1;
+                    if (key.Key is ConsoleKey.Enter or ConsoleKey.Spacebar or ConsoleKey.Packet) return cursor;
+                    var next = key.Key switch
+                    {
+                        ConsoleKey.UpArrow => cursor == 0 ? (wrap ? choices.Count - 1 : 0) : cursor - 1,
+                        ConsoleKey.DownArrow => cursor == choices.Count - 1 ? (wrap ? 0 : cursor) : cursor + 1,
+                        _ => -1
+                    };
+                    if (next < 0 || next == cursor) continue;
+                    cursor = next;
+                    if (cursor < window) window = cursor;
+                    else if (cursor >= window + size) window = cursor - size + 1;
+                    ctx.UpdateTarget(Menu(choices, cursor, window, size, title, more, back));
+                }
+            });
+    }
+
+    private static Spectre.Console.Rendering.IRenderable Menu(IReadOnlyList<string> choices, int cursor, int window, int size, string? title, string? more, bool back)
+    {
+        var rows = new List<Spectre.Console.Rendering.IRenderable>();
+        if (title != null) rows.Add(new Markup(title));
+        var grid = new Grid();
+        grid.AddColumn(new GridColumn().Padding(0, 0, 1, 0).NoWrap());
+        if (title != null) grid.AddEmptyRow();
+        for (var i = 0; i < size; i++)
+        {
+            var index = window + i;
+            var current = index == cursor;
+            var text = current ? choices[index].RemoveMarkup().EscapeMarkup() : choices[index];
+            grid.AddRow(new Markup((current ? ">" : " ") + " " + text, current ? Highlight : Style.Plain));
+        }
+        rows.Add(grid);
+        if (choices.Count > size)
+        {
+            rows.Add(Text.Empty);
+            rows.Add(new Markup(more ?? "[grey](Move up and down to reveal more choices)[/]"));
+        }
+        if (back) rows.Add(new Markup(BackHint));
+        return new Rows(rows);
+    }
 
     private static void Pause(string message)
     {
         if (message.Length > 0) AnsiConsole.WriteLine(message.Length > 2000 ? message[..2000] : message);
-        AnsiConsole.MarkupLine("[grey62]回车继续[/]");
-        Console.ReadLine();
+        AnsiConsole.MarkupLine("[grey62]回车继续 · esc 返回[/]");
+        while (Console.ReadKey(true).Key is not (ConsoleKey.Enter or ConsoleKey.Escape)) { }
     }
 }
 
