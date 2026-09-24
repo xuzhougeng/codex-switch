@@ -68,7 +68,7 @@ export https_proxy=http://127.0.0.1:1990
 
 `codex-switch shell`（菜单里的 Shell 命令）把这两行包成 `~/.local/bin/function.sh` 的 `claude` 和 `codex` 函数，并在 `.zshrc` / `.bashrc` 里加一行 source，端口从运行中的服务读。
 
-节点走订阅：菜单里填订阅 URL，刷新后按整条链路（本机 → 中转 → 美国家宽 → 测试地址）测延迟，选总延迟最低的中转作为一跳首选。测速在一个临时 mihomo 里进行，不动运行中的服务；家宽密码只写进测完即删的 0700 临时目录，仍不进 `ai.yaml`。
+节点里填写并刷新订阅。切换第一跳可以选择自动或手动：自动按整条链路（本机 → 中转 → 美国家宽 → 测试地址）测延迟，留下总延迟最低的中转；手动从订阅里指定一个。服务在跑时手动切换立即生效并写入配置，没启动时只保存、下次启动再用。测速在一个临时 mihomo 里进行，不动运行中的服务；家宽密码只写进测完即删的 0700 临时目录，仍不进 `ai.yaml`。
 
 配置和运行文件在 `~/.config/codex-switch/`（`clash-proxy.json` 和 `clash/ai.yaml`），不写进 `~/.codex`。已经存在的旧目录会在第一次启动时复制过去。退出菜单后服务继续运行；`codex-switch stop` 或菜单里的停止会关掉它。开机启动写的是 `~/.config/systemd/user/codex-mihomo.service`。
 

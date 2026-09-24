@@ -29,8 +29,8 @@ sealed class MihomoTui
             var menu = new List<(string Label, string Hint)>();
             if (status.Running) menu.AddRange([("重启", "应用改过的配置"), ("停止", "")]);
             else menu.Add(("启动", "后台运行 mihomo 和限流"));
-            menu.AddRange([("节点", "订阅 · 测速 · 手选第一跳"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
-            if (status.Running) menu.AddRange([("切换第一跳", "临时切换，不写入配置"), ("运行详情", "进程与当前连接")]);
+            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
+            if (status.Running) menu.Add(("运行详情", "进程与当前连接"));
             menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
                 ("开机启动", "systemd 用户服务"), ("退出", "")]);
             var labels = menu.Select(item => Markup.Escape(item.Label)
@@ -49,7 +49,7 @@ sealed class MihomoTui
                     case "节点": await Nodes(settings); break;
                     case "家宽 SOCKS5": Home(settings); break;
                     case "端口与限流": Ports(settings); break;
-                    case "切换第一跳": await SelectRelay(settings, status); break;
+                    case "切换第一跳": await SwitchRelay(settings); break;
                     case "运行详情": await Details(settings, status); break;
                     case "日志": Logs(); break;
                     case "内核": await Kernel(); break;
@@ -160,13 +160,11 @@ sealed class MihomoTui
         var url = string.IsNullOrWhiteSpace(settings.SubscriptionUrl) ? "未填写" : settings.SubscriptionUrl;
         AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
         AnsiConsole.MarkupLine("[grey62]{0}[/]", Markup.Escape(url));
-        var options = new[] { "测速选择第一跳", "填写订阅", "刷新订阅", "手动选择", "返回" };
-        var index = Pick(options, title: "[grey62]订阅里的节点[/]");
+        var options = new[] { "填写订阅", "刷新订阅", "返回" };
+        var index = Pick(options, title: "[grey62]订阅[/]");
         if (index < 0 || options[index] == "返回") return;
         if (options[index] == "填写订阅") await ReplaceSubscription(settings);
-        else if (options[index] == "刷新订阅") await RefreshSubscription(settings);
-        else if (options[index] == "手动选择") ChooseRelay(settings);
-        else await ProbeAndSelect(settings);
+        else await RefreshSubscription(settings);
     }
 
     private async Task ReplaceSubscription(ClashProxySettings settings)
@@ -186,7 +184,7 @@ sealed class MihomoTui
         local.Store.Save(settings);
         if (string.IsNullOrWhiteSpace(settings.HomeServer))
         {
-            Pause("订阅已保存，共 " + names.Count + " 个节点。填好家宽后可以测速选择第一跳。");
+            Pause("订阅已保存，共 " + names.Count + " 个节点。填好家宽后，在「切换第一跳」里自动测速。");
             return;
         }
         await ProbeAndSelect(settings);
@@ -229,22 +227,61 @@ sealed class MihomoTui
         Pause(bestName + "  整条链路 " + bestDelay + " ms，已保存并生效。");
     }
 
-    private void ChooseRelay(ClashProxySettings settings)
+    private async Task SwitchRelay(ClashProxySettings settings)
+    {
+        var actions = new[] { "自动", "手动", "返回" };
+        while (true)
+        {
+            AnsiConsole.Clear();
+            var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+            var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "未选择";
+            AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
+            string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
+            var index = Pick(new[] { Row("自动", "测整条链路，留下最快的"), Row("手动", "从订阅里指定一个"), "返回" }, title: "[grey62]切换第一跳[/]");
+            if (index < 0 || actions[index] == "返回") return;
+            if (actions[index] == "自动") await ProbeAndSelect(settings);
+            else await ChooseRelay(settings);
+        }
+    }
+
+    private async Task ChooseRelay(ClashProxySettings settings)
     {
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
         if (names.Count == 1)
         {
-            settings.SelectedRelay = names[0];
-            Save(settings);
+            await ApplyRelay(settings, names[0]);
             return;
         }
         var options = names.Append("返回").ToList();
         var index = Pick(options.Select(Markup.Escape).ToList(), title: "选择第一跳",
             pageSize: Math.Min(12, options.Count), more: "[grey62]↑↓ 还有节点[/]");
         if (index < 0 || options[index] == "返回") return;
-        settings.SelectedRelay = options[index];
-        Save(settings);
+        await ApplyRelay(settings, options[index]);
+    }
+
+    // A running service switches live. A stopped one only stores the name for the next start.
+    private async Task ApplyRelay(ClashProxySettings settings, string name)
+    {
+        settings.SelectedRelay = name;
+        local.Store.Save(settings);
+        var status = local.Service.Status();
+        if (!status.Running)
+        {
+            Pause("已保存，启动后生效");
+            return;
+        }
+        var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
+        try
+        {
+            await ClashApi.SelectAsync(settings.Controller, group, name, CancellationToken.None);
+            Pause("第一跳已切到 " + name);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+        {
+            if (Confirm("没有切到运行中的服务。现在重启？")) Pause(local.Restart(settings).Detail);
+            else Pause("已保存，重启后生效");
+        }
     }
 
     private void Home(ClashProxySettings settings)
@@ -293,19 +330,6 @@ sealed class MihomoTui
         settings.DialIntervalMs = AskInt("两条新建之间的间隔（毫秒）", settings.DialIntervalMs);
         settings.QueueWaitS = AskInt("排队上限（秒）", settings.QueueWaitS);
         Save(settings);
-    }
-
-    private async Task SelectRelay(ClashProxySettings settings, ClashProxyStatus status)
-    {
-        if (!status.Running) throw new InvalidOperationException("先启动服务，再切换第一跳。");
-        var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
-        var info = await ClashApi.GroupAsync(settings.Controller, group, CancellationToken.None);
-        if (info.All.Count == 0) throw new InvalidOperationException("控制端口没有返回可选节点。");
-        var options = info.All.Append("返回").ToList();
-        var index = Pick(options.Select(Markup.Escape).ToList(), title: "当前 " + Markup.Escape(info.Now));
-        if (index < 0 || options[index] == "返回") return;
-        await ClashApi.SelectAsync(settings.Controller, group, options[index], CancellationToken.None);
-        Pause("第一跳已切到 " + options[index]);
     }
 
     private async Task Details(ClashProxySettings settings, ClashProxyStatus status)
