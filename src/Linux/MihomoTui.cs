@@ -243,7 +243,7 @@ sealed class MihomoTui
             var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "未选择";
             AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
             string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
-            var index = Pick(new[] { Row("自动", "测整条链路，留下最快的"), Row("手动", "从订阅里指定一个"), "返回" }, title: "[grey62]切换第一跳[/]");
+            var index = Pick(new[] { Row("自动", "测整条链路，留下最快的"), Row("手动", "从列表指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]切换第一跳[/]");
             if (index < 0 || actions[index] == "返回") return;
             if (actions[index] == "自动") await ProbeAndSelect(settings);
             else await ChooseRelay(settings);
@@ -254,16 +254,17 @@ sealed class MihomoTui
     {
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
-        if (names.Count == 1)
-        {
-            await ApplyRelay(settings, names[0]);
-            return;
-        }
-        var options = names.Append("返回").ToList();
-        var index = Pick(options.Select(Markup.Escape).ToList(), title: "选择第一跳",
-            pageSize: Math.Min(12, options.Count), more: "[grey62]↑↓ 还有节点[/]");
-        if (index < 0 || options[index] == "返回") return;
-        await ApplyRelay(settings, options[index]);
+        var picked = await PickAndProbe(names,
+            names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names[0],
+            "选择第一跳",
+            async () =>
+            {
+                if (string.IsNullOrWhiteSpace(settings.HomeServer))
+                    throw new InvalidOperationException("先填写家宽，再测第一跳。");
+                return await ProbeSession.StartChainAsync(local.Store, settings);
+            });
+        if (picked == null) return;
+        await ApplyRelay(settings, picked.Value.Name);
     }
 
     // A running service switches live. A stopped one only stores the name for the next start.
@@ -301,7 +302,7 @@ sealed class MihomoTui
             AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
             AnsiConsole.MarkupLine("[grey62]直出 downloads.claude.ai，不进家宽[/]");
             string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
-            var index = Pick(new[] { Row("自动", "测到更新地址，留下最快的"), Row("手动", "从订阅里指定一个"), "返回" }, title: "[grey62]第一代理[/]");
+            var index = Pick(new[] { Row("自动", "测到更新地址，留下最快的"), Row("手动", "从列表指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]第一代理[/]");
             if (index < 0 || actions[index] == "返回") return;
             if (actions[index] == "自动") await ProbeAndSelectExit(settings);
             else await ChooseExit(settings);
@@ -339,16 +340,12 @@ sealed class MihomoTui
     {
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
-        if (names.Count == 1)
-        {
-            await ApplyExit(settings, names[0], null);
-            return;
-        }
-        var options = names.Append("返回").ToList();
-        var index = Pick(options.Select(Markup.Escape).ToList(), title: "选择第一代理",
-            pageSize: Math.Min(12, options.Count), more: "[grey62]↑↓ 还有节点[/]");
-        if (index < 0 || options[index] == "返回") return;
-        await ApplyExit(settings, options[index], null);
+        var picked = await PickAndProbe(names,
+            names.Contains(settings.SelectedExit) ? settings.SelectedExit : names[0],
+            "选择第一代理",
+            () => ProbeSession.StartExitAsync(local.Store, settings));
+        if (picked == null) return;
+        await ApplyExit(settings, picked.Value.Name, picked.Value.Delay);
     }
 
     // Saved apart from the 中转. A running service switches exit-group live; a stopped one waits for the next start.
@@ -828,6 +825,171 @@ sealed class MihomoTui
             text += key.KeyChar;
             AnsiConsole.Write(secret ? "*" : key.KeyChar.ToString());
         }
+    }
+
+    // Manual list: arrows + enter pick a node; t tests the highlighted row, a tests every node.
+    // The throwaway probe starts on the first t/a so a plain selection stays instant.
+    private async Task<(string Name, int? Delay)?> PickAndProbe(
+        IReadOnlyList<string> names,
+        string current,
+        string title,
+        Func<Task<ProbeSession>> start)
+    {
+        var cursor = 0;
+        for (var i = 0; i < names.Count; i++)
+            if (names[i] == current) { cursor = i; break; }
+        var size = Math.Min(12, names.Count);
+        var window = cursor < size ? 0 : cursor - size + 1;
+        var delays = new Dictionary<string, int>(StringComparer.Ordinal);
+        ProbeSession? session = null;
+        string? testing = null;
+        var starting = false;
+        var bulk = false;
+        string? error = null;
+
+        int? Measured(string name) => delays.TryGetValue(name, out var ms) && ms >= 0 ? ms : null;
+
+        Spectre.Console.Rendering.IRenderable Build() =>
+            NodeMenu(names, current, title, cursor, window, size, delays, testing, starting, bulk, error);
+
+        AnsiConsole.Clear();
+        try
+        {
+            return await AnsiConsole.Live(Build())
+                .AutoClear(true)
+                .Overflow(VerticalOverflow.Visible)
+                .StartAsync<(string Name, int? Delay)?>(async ctx =>
+                {
+                    ctx.Refresh();
+                    while (true)
+                    {
+                        var key = Console.ReadKey(true);
+                        if (key.Key == ConsoleKey.Escape) return null;
+                        if (key.Key is ConsoleKey.Enter or ConsoleKey.Spacebar or ConsoleKey.Packet)
+                            return (names[cursor], Measured(names[cursor]));
+                        if (key.Key is ConsoleKey.UpArrow or ConsoleKey.DownArrow)
+                        {
+                            var next = key.Key == ConsoleKey.UpArrow
+                                ? (cursor == 0 ? 0 : cursor - 1)
+                                : (cursor == names.Count - 1 ? cursor : cursor + 1);
+                            if (next != cursor)
+                            {
+                                cursor = next;
+                                if (cursor < window) window = cursor;
+                                else if (cursor >= window + size) window = cursor - size + 1;
+                                ctx.UpdateTarget(Build());
+                            }
+                            continue;
+                        }
+                        var ch = char.ToLowerInvariant(key.KeyChar);
+                        if (ch is not ('t' or 'a')) continue;
+                        error = null;
+                        try
+                        {
+                            if (session is null)
+                            {
+                                starting = true;
+                                ctx.UpdateTarget(Build());
+                                session = await start();
+                                starting = false;
+                            }
+                            if (ch == 't')
+                            {
+                                testing = names[cursor];
+                                ctx.UpdateTarget(Build());
+                                delays[testing] = await session.DelayAsync(testing, 5000);
+                                testing = null;
+                            }
+                            else
+                            {
+                                bulk = true;
+                                ctx.UpdateTarget(Build());
+                                await session.ProbeAllAsync(5000, (name, delay) =>
+                                {
+                                    lock (delays) delays[name] = delay;
+                                });
+                                bulk = false;
+                                var best = int.MaxValue;
+                                var at = -1;
+                                for (var i = 0; i < names.Count; i++)
+                                {
+                                    if (!delays.TryGetValue(names[i], out var ms) || ms < 0 || ms >= best) continue;
+                                    best = ms;
+                                    at = i;
+                                }
+                                if (at >= 0)
+                                {
+                                    cursor = at;
+                                    if (cursor < window) window = cursor;
+                                    else if (cursor >= window + size) window = cursor - size + 1;
+                                }
+                            }
+                        }
+                        catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException or JsonException)
+                        {
+                            testing = null;
+                            starting = false;
+                            bulk = false;
+                            var text = ex.Message.Replace('\n', ' ').Trim();
+                            error = text.Length > 80 ? text[..80] : text;
+                        }
+                        while (Console.KeyAvailable) Console.ReadKey(true);
+                        ctx.UpdateTarget(Build());
+                    }
+                });
+        }
+        finally
+        {
+            if (session != null) await session.DisposeAsync();
+        }
+    }
+
+    private static Spectre.Console.Rendering.IRenderable NodeMenu(
+        IReadOnlyList<string> names,
+        string current,
+        string title,
+        int cursor,
+        int window,
+        int size,
+        Dictionary<string, int> delays,
+        string? testing,
+        bool starting,
+        bool bulk,
+        string? error)
+    {
+        var rows = new List<Spectre.Console.Rendering.IRenderable>
+        {
+            new Markup("当前 [bold]" + Markup.Escape(Plain(current)) + "[/]"),
+            new Markup(Markup.Escape(title))
+        };
+        var grid = new Grid();
+        grid.AddColumn(new GridColumn().Padding(0, 0, 1, 0).NoWrap());
+        grid.AddEmptyRow();
+        for (var i = 0; i < size; i++)
+        {
+            var index = window + i;
+            var name = names[index];
+            var selected = index == cursor;
+            var head = Markup.Escape(Plain(name));
+            var tail = name == testing ? "  [grey62]测…[/]"
+                : delays.TryGetValue(name, out var ms)
+                    ? (ms < 0 ? "  [yellow]超时[/]" : "  [grey62]" + ms.ToString() + " ms[/]")
+                    : "";
+            var text = selected ? (head + tail).RemoveMarkup().EscapeMarkup() : head + tail;
+            grid.AddRow(new Markup((selected ? ">" : " ") + " " + text, selected ? Highlight : Style.Plain));
+        }
+        rows.Add(grid);
+        if (names.Count > size)
+        {
+            rows.Add(Text.Empty);
+            rows.Add(new Markup("[grey62]↑↓ 还有节点[/]"));
+        }
+        if (error != null) rows.Add(new Markup("[yellow]" + Markup.Escape(error) + "[/]"));
+        else if (starting) rows.Add(new Markup("[grey62]启动测速…[/]"));
+        else if (bulk) rows.Add(new Markup("[grey62]正在测速…[/]"));
+        else rows.Add(new Markup("[grey62]t 测当前   a 测全部   回车选择[/]"));
+        rows.Add(new Markup(BackHint));
+        return new Rows(rows);
     }
 
     // Choices are markup. The highlighted row is plain, black on yellow, matching the old selection prompt.
