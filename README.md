@@ -2,14 +2,14 @@
 
 本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**，Linux 使用终端界面管理 mihomo。原 PowerShell 命令行继续保留。
 
-当前版本 **0.2.0**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.2.0)
+当前版本 **0.3.0**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.3.0)
 
 | 包 | 平台 |
 | --- | --- |
-| `CodexSwitch-0.2.0-windows-x64.zip` | Windows x64 |
-| `CodexSwitch-0.2.0-macos-arm64.zip` | macOS Apple Silicon |
-| `CodexSwitch-0.2.0-linux-x64.tar.gz` | Linux x64，含 mihomo |
-| `CodexSwitch-0.2.0-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
+| `CodexSwitch-0.3.0-windows-x64.zip` | Windows x64 |
+| `CodexSwitch-0.3.0-macos-arm64.zip` | macOS Apple Silicon |
+| `CodexSwitch-0.3.0-linux-x64.tar.gz` | Linux x64，含 mihomo |
+| `CodexSwitch-0.3.0-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
 
 原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 

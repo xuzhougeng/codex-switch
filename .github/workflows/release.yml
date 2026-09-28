@@ -94,6 +94,8 @@ jobs:
 
           Windows 和 macOS 是 Codex 账号切换。Linux 是 mihomo 终端管理，包内带有 mihomo v1.19.31，按端口接管 Codex / Claude 流量。
 
+          Linux 此版本：按整条链路（本机 → 中转 → 家宽）测速选择第一跳；手动列表按 \`t\` 测当前、\`a\` 测全部；第一代理直出 downloads.claude.ai；内核页可在线更新；日志分页；Esc 返回不保存。开机服务会带上本机 DOTNET_ROOT。
+
           | 包 | 平台 |
           | --- | --- |
           | \`CodexSwitch-${ver}-windows-x64.zip\` | Windows 10 2004+ / 11，x64。解压后保留整个目录，运行 \`CodexSwitch.Windows.exe\` |
