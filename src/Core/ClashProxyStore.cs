@@ -9,9 +9,11 @@ public sealed class ClashProxySettings
     public string Controller { get; set; } = "127.0.0.1:1993";
     public string LimiterListen { get; set; } = "127.0.0.1:1994";
     public string RelayGroup { get; set; } = "relay-group";
+    public string ExitGroup { get; set; } = "exit-group";
     public string TargetName { get; set; } = "target-socks5";
     public string SubscriptionUrl { get; set; } = "";
     public string SelectedRelay { get; set; } = "";
+    public string SelectedExit { get; set; } = "";
     public string RelayYaml { get; set; } = "";
     public string HomeServer { get; set; } = "";
     public string HomePort { get; set; } = "1080";
@@ -147,7 +149,9 @@ public sealed class ClashProxyStore
         settings.DialIntervalMs,
         settings.QueueWaitS,
         allowLan,
-        settings.SelectedRelay);
+        settings.SelectedRelay,
+        settings.ExitGroup,
+        settings.SelectedExit);
 
     private static void Write(string path, string text)
     {

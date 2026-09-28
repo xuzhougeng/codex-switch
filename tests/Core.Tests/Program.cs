@@ -120,12 +120,25 @@ try
     Check(built.Yaml.Contains("IP-CIDR,38.121.23.194/32,relay-group,no-resolve"), "home IP uses first hop to avoid a loop");
     Check(built.Yaml.Contains("DOMAIN-SUFFIX,openai.com,target-socks5"), "openai goes through the limiter target");
     Check(built.Yaml.Contains("DOMAIN,api.github.com,relay-group"), "github bypasses residential SOCKS");
+    var rules = built.Yaml.Replace("\r\n", "\n");
+    var claudeUpdate = rules.IndexOf("DOMAIN,downloads.claude.ai,exit-group", StringComparison.Ordinal);
+    var claudeApi = rules.IndexOf("DOMAIN-SUFFIX,claude.ai,target-socks5", StringComparison.Ordinal);
+    Check(claudeUpdate >= 0 && claudeApi > claudeUpdate, "claude downloads use the exit group and the API stays on the home hop");
     Check(built.Yaml.Contains("allow-lan: true"), "desktop yaml keeps lan on by default");
     Check(!built.Yaml.Contains("bind-address:"), "desktop yaml does not pin the bind address");
     var plain = DialerProxyBuilder.Build(new DialerProxyInput("- name: relay-plain\n  type: ss\n  server: example.com\n  port: 443\n", "1.2.3.4", "1080", "", "")).Yaml.Replace("\r\n", "\n");
     Check(plain.Contains("\n  - name: relay-plain\n    type: ss\n"), "an unindented relay list is nested under proxies");
-    var picked = DialerProxyBuilder.Build(new DialerProxyInput("- name: one\n  type: ss\n- name: two\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "two")).Yaml.Replace("\r\n", "\n");
-    Check(picked.Contains("proxies:\n      - two\n      - one\n"), "the node chosen from a subscription is the default first hop");
+    var picked = DialerProxyBuilder.Build(new DialerProxyInput("- name: one\n  type: ss\n- name: two\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "two", SelectedExit: "one")).Yaml.Replace("\r\n", "\n");
+    var relayAt = picked.IndexOf("name: relay-group", StringComparison.Ordinal);
+    var exitAt = picked.IndexOf("name: exit-group", StringComparison.Ordinal);
+    var proxyAt = picked.IndexOf("name: Proxy", StringComparison.Ordinal);
+    Check(relayAt >= 0 && exitAt > relayAt && proxyAt > exitAt, "relay and exit are separate groups");
+    Check(picked[relayAt..exitAt].Contains("proxies:\n      - two\n      - one\n"), "the node chosen for the home chain is the default relay");
+    Check(picked[exitAt..proxyAt].Contains("proxies:\n      - one\n      - two\n"), "the exit node is chosen independently of the relay");
+    var unset = DialerProxyBuilder.Build(new DialerProxyInput("- name: one\n  type: ss\n- name: two\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "two")).Yaml.Replace("\r\n", "\n");
+    var unsetExit = unset.IndexOf("name: exit-group", StringComparison.Ordinal);
+    var unsetProxy = unset.IndexOf("name: Proxy", StringComparison.Ordinal);
+    Check(unsetExit >= 0 && unsetProxy > unsetExit && unset[unsetExit..unsetProxy].Contains("proxies:\n      - two\n      - one\n"), "an unscreened exit starts on the relay until its own node is saved");
     var unicode = DialerProxyBuilder.ExtractRelayNames("- name: 🇦🇺 AU1 澳大利亚\n  type: ss\n- name: \"🇺🇸 US 01\"\n  type: ss\n");
     Check(unicode.Count == 2 && unicode[0] == "🇦🇺 AU1 澳大利亚" && unicode[1] == "🇺🇸 US 01", "relay names keep the full UTF-8 label");
     var aligned = DialerProxyBuilder.Build(new DialerProxyInput("  - name: 🇦🇺 AU1 澳大利亚\n    type: http\n    server: example.com\n    port: 1\n", "203.0.113.10", "1080", "", "")).Yaml.Replace("\r\n", "\n");
@@ -138,6 +151,9 @@ try
         "probe reaches the home SOCKS through each relay in order");
     Check(probe.Contains("external-controller: \"127.0.0.1:5555\"") && !probe.Contains("port: 1990") && !probe.Contains("socks-port"), "probe opens only its own controller");
     Reject(() => DialerProxyBuilder.BuildProbe(new DialerProxyInput("- name: one\n  type: ss\n", "1.2.3.4", "x", "", ""), "127.0.0.1:5555"), "probe needs a numeric home port");
+    var exitProbe = DialerProxyBuilder.BuildExitProbe(new DialerProxyInput("- name: one\n  type: ss\n", "38.121.23.194", "33225", "user", "secret"), "127.0.0.1:5556").Replace("\r\n", "\n");
+    Check(exitProbe.Contains("external-controller: \"127.0.0.1:5556\"") && exitProbe.Contains("- name: one\n") && !exitProbe.Contains("38.121.23.194") && !exitProbe.Contains("secret") && !exitProbe.Contains("dialer-proxy"),
+        "exit probe times the node itself and leaves the home SOCKS out");
 
     var clashHome = Path.Combine(root, "clash-home");
     var clashStore = new ClashProxyStore(clashHome);
@@ -148,11 +164,11 @@ try
     var settings = new ClashProxySettings
     {
         RelayYaml = relay, HomeServer = "home.example.com", HomePort = "1080", HomePassword = "pw",
-        PythonPath = pythonStub, MihomoPath = mihomoStub
+        PythonPath = pythonStub, MihomoPath = mihomoStub, SelectedRelay = "relay-hk-01", SelectedExit = "relay-hk-01"
     };
     clashStore.Save(settings);
     var loaded = clashStore.Load();
-    Check(loaded.HomeServer == "home.example.com" && loaded.HomePassword == "pw", "clash settings round-trip");
+    Check(loaded.HomeServer == "home.example.com" && loaded.HomePassword == "pw" && loaded.SelectedExit == "relay-hk-01" && loaded.ExitGroup == "exit-group", "clash settings round-trip");
     clashStore.Materialize(loaded);
     Check(File.ReadAllText(clashStore.YamlPath).Contains("DOMAIN,home.example.com,relay-group"), "hostname loop-avoidance");
     Check(File.Exists(clashStore.LimiterPythonPath), "limiter script written next to yaml");

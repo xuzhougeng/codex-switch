@@ -178,6 +178,57 @@ static class MihomoDaemon
         }
     }
 
+    // Times me -> node -> downloads.claude.ai. The node is the exit, so this does not dial the home SOCKS.
+    public static async Task ProbeExitsAsync(ClashProxyStore store, ClashProxySettings settings, int timeoutMs, Action<string, int> done)
+    {
+        if (!OperatingSystem.IsLinux()) throw new InvalidOperationException("测速只在 Linux 上运行。");
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var kernel = MihomoKernel.Resolve(settings.MihomoPath);
+        MihomoKernel.EnsureExecutable(kernel);
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var controller = "127.0.0.1:" + ((IPEndPoint)listener.LocalEndpoint).Port.ToString(CultureInfo.InvariantCulture);
+        listener.Stop();
+        var dir = Path.Combine(store.WorkDirectory, "probe-exit");
+        if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        // 0700: the probe config carries the subscription credentials.
+        Directory.CreateDirectory(dir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var yaml = Path.Combine(dir, "probe.yaml");
+        File.WriteAllText(yaml, DialerProxyBuilder.BuildExitProbe(ClashProxyStore.ToInput(settings), controller));
+        using var proc = Build(kernel, store, "-d", dir, "-f", yaml);
+        proc.Start();
+        var stdout = proc.StandardOutput.ReadToEndAsync();
+        var stderr = proc.StandardError.ReadToEndAsync();
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (true)
+            {
+                if (proc.HasExited)
+                    throw new InvalidOperationException("测速用的 mihomo 没有启动：\n" + ((await stdout) + (await stderr)).Trim());
+                try
+                {
+                    await ClashApi.GroupAsync(controller, names[^1], CancellationToken.None);
+                    break;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
+                {
+                    if (DateTime.UtcNow > deadline) throw new InvalidOperationException("测速用的 mihomo 10 秒内没有就绪。");
+                    await Task.Delay(100);
+                }
+            }
+            await Parallel.ForEachAsync(names, new ParallelOptions { MaxDegreeOfParallelism = 4 }, async (name, token) =>
+                done(name, await ClashApi.DelayAsync(controller, name, timeoutMs, DialerProxyBuilder.ExitTestUrl, token)));
+        }
+        finally
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            await proc.WaitForExitAsync();
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
+    }
+
     private static Process Build(string kernel, ClashProxyStore store, params string[] args)
     {
         var info = new ProcessStartInfo(kernel)

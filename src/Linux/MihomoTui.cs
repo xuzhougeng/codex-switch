@@ -29,7 +29,7 @@ sealed class MihomoTui
             var menu = new List<(string Label, string Hint)>();
             if (status.Running) menu.AddRange([("重启", "应用改过的配置"), ("停止", "")]);
             else menu.Add(("启动", "后台运行 mihomo 和限流"));
-            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
+            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("第一代理", "更新直出 · 自动测速"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
             if (status.Running) menu.Add(("运行详情", "进程与当前连接"));
             menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
                 ("开机启动", "systemd 用户服务"), ("退出", "")]);
@@ -50,6 +50,7 @@ sealed class MihomoTui
                     case "家宽 SOCKS5": Home(settings); break;
                     case "端口与限流": Ports(settings); break;
                     case "切换第一跳": await SwitchRelay(settings); break;
+                    case "第一代理": await SwitchExit(settings); break;
                     case "运行详情": await Details(settings, status); break;
                     case "日志": Logs(); break;
                     case "内核": await Kernel(); break;
@@ -82,6 +83,8 @@ sealed class MihomoTui
     {
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "";
+        var exitChosen = names.Contains(settings.SelectedExit);
+        var exit = exitChosen ? settings.SelectedExit : names.FirstOrDefault() ?? "";
         var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "关";
         var pace = ReadPace(status);
         var grid = new Grid()
@@ -100,6 +103,8 @@ sealed class MihomoTui
         Row("一跳", Markup.Escape("127.0.0.1:" + settings.SocksPort), names.Count == 0
             ? "[yellow]先填订阅[/]"
             : "[bold default]" + Markup.Escape(Plain(current)) + "[/] · 订阅 " + names.Count + " 个");
+        Row("更新", names.Count == 0 ? "[yellow]先填订阅[/]" : "[bold default]" + Markup.Escape(Plain(exit)) + "[/]",
+            exitChosen ? "直出 downloads.claude.ai" : "未测速 · 直出 downloads.claude.ai");
         Row("家宽", string.IsNullOrWhiteSpace(settings.HomeServer)
             ? "[yellow]未填写[/]"
             : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), "SOCKS5");
@@ -181,6 +186,7 @@ sealed class MihomoTui
         settings.RelayYaml = await RelayImport.FromUrlAsync(settings.SubscriptionUrl);
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         if (!names.Contains(settings.SelectedRelay)) settings.SelectedRelay = names[0];
+        if (!names.Contains(settings.SelectedExit)) settings.SelectedExit = "";
         local.Store.Save(settings);
         if (string.IsNullOrWhiteSpace(settings.HomeServer))
         {
@@ -281,6 +287,92 @@ sealed class MihomoTui
         {
             if (Confirm("没有切到运行中的服务。现在重启？")) Pause(local.Restart(settings).Detail);
             else Pause("已保存，重启后生效");
+        }
+    }
+
+    private async Task SwitchExit(ClashProxySettings settings)
+    {
+        var actions = new[] { "自动", "手动", "返回" };
+        while (true)
+        {
+            AnsiConsole.Clear();
+            var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+            var current = names.Contains(settings.SelectedExit) ? settings.SelectedExit : "未测速";
+            AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
+            AnsiConsole.MarkupLine("[grey62]直出 downloads.claude.ai，不进家宽[/]");
+            string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
+            var index = Pick(new[] { Row("自动", "测到更新地址，留下最快的"), Row("手动", "从订阅里指定一个"), "返回" }, title: "[grey62]第一代理[/]");
+            if (index < 0 || actions[index] == "返回") return;
+            if (actions[index] == "自动") await ProbeAndSelectExit(settings);
+            else await ChooseExit(settings);
+        }
+    }
+
+    private async Task ProbeAndSelectExit(ClashProxySettings settings)
+    {
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var bestName = "";
+        var bestDelay = int.MaxValue;
+        var finished = 0;
+        await AnsiConsole.Status().StartAsync("测直出：本机 → 节点 → downloads.claude.ai", async ctx =>
+        {
+            await MihomoDaemon.ProbeExitsAsync(local.Store, settings, 5000, (name, delay) =>
+            {
+                lock (names)
+                {
+                    finished++;
+                    if (delay >= 0 && delay < bestDelay)
+                    {
+                        bestDelay = delay;
+                        bestName = name;
+                    }
+                    ctx.Status("已测 " + finished + "/" + names.Count + (bestName.Length == 0 ? "" : "  最快 " + bestDelay + " ms"));
+                }
+            });
+        });
+        if (bestName.Length == 0) throw new InvalidOperationException("没有节点在 5 秒内连上 downloads.claude.ai。");
+        await ApplyExit(settings, bestName, bestDelay);
+    }
+
+    private async Task ChooseExit(ClashProxySettings settings)
+    {
+        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        if (names.Count == 1)
+        {
+            await ApplyExit(settings, names[0], null);
+            return;
+        }
+        var options = names.Append("返回").ToList();
+        var index = Pick(options.Select(Markup.Escape).ToList(), title: "选择第一代理",
+            pageSize: Math.Min(12, options.Count), more: "[grey62]↑↓ 还有节点[/]");
+        if (index < 0 || options[index] == "返回") return;
+        await ApplyExit(settings, options[index], null);
+    }
+
+    // Saved apart from the 中转. A running service switches exit-group live; a stopped one waits for the next start.
+    private async Task ApplyExit(ClashProxySettings settings, string name, int? delay)
+    {
+        settings.SelectedExit = name;
+        local.Store.Save(settings);
+        var timed = delay is int measured ? name + "  直出 " + measured + " ms" : "";
+        var status = local.Service.Status();
+        if (!status.Running)
+        {
+            Pause((timed.Length == 0 ? "已保存" : timed + "，已保存") + "，启动后生效");
+            return;
+        }
+        var group = string.IsNullOrWhiteSpace(settings.ExitGroup) ? "exit-group" : settings.ExitGroup;
+        try
+        {
+            await ClashApi.SelectAsync(settings.Controller, group, name, CancellationToken.None, "切换第一代理失败");
+            Pause(timed.Length == 0 ? "第一代理已切到 " + name : timed + "，已生效。");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+        {
+            if (Confirm("运行中的配置还没有这条线路。现在重启？")) Pause(local.Restart(settings).Detail);
+            else Pause((timed.Length == 0 ? "已保存" : timed + "，已保存") + "，重启后生效");
         }
     }
 

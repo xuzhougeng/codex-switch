@@ -23,13 +23,23 @@ static class ClashApi
         return (now, all);
     }
 
-    public static async Task<int> DelayAsync(string controller, string name, int timeoutMs, CancellationToken cancellationToken)
+    public static Task<int> DelayAsync(string controller, string name, int timeoutMs, CancellationToken cancellationToken) =>
+        DelayAsync(controller, name, timeoutMs, "http://www.gstatic.com/generate_204", cancellationToken);
+
+    public static async Task<int> DelayAsync(string controller, string name, int timeoutMs, string url, CancellationToken cancellationToken)
     {
-        var test = Uri.EscapeDataString("http://www.gstatic.com/generate_204");
-        var path = "/proxies/" + Uri.EscapeDataString(name) + "/delay?timeout=" + timeoutMs.ToString() + "&url=" + test;
+        var path = "/proxies/" + Uri.EscapeDataString(name) + "/delay?timeout=" + timeoutMs.ToString()
+            + "&url=" + Uri.EscapeDataString(url);
         try
         {
-            using var doc = await GetAsync(controller, path, cancellationToken);
+            using var http = new HttpClient(new HttpClientHandler { UseProxy = false })
+            {
+                Timeout = TimeSpan.FromMilliseconds(Math.Max(timeoutMs, 1) + 1000)
+            };
+            using var response = await http.GetAsync(Base(controller) + path, cancellationToken);
+            var text = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode) return -1;
+            using var doc = JsonDocument.Parse(text);
             return doc.RootElement.TryGetProperty("delay", out var delay) && delay.TryGetInt32(out var ms) ? ms : -1;
         }
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException)
@@ -38,14 +48,14 @@ static class ClashApi
         }
     }
 
-    public static async Task SelectAsync(string controller, string group, string name, CancellationToken cancellationToken)
+    public static async Task SelectAsync(string controller, string group, string name, CancellationToken cancellationToken, string failure = "切换第一跳失败")
     {
         using var http = Client();
         var body = new StringContent(JsonSerializer.Serialize(new Dictionary<string, string> { ["name"] = name }), Encoding.UTF8, "application/json");
         using var response = await http.PutAsync(Base(controller) + "/proxies/" + Uri.EscapeDataString(group), body, cancellationToken);
         if (response.StatusCode == HttpStatusCode.NoContent || response.IsSuccessStatusCode) return;
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
-        throw new InvalidOperationException("切换第一跳失败：" + (string.IsNullOrWhiteSpace(text) ? response.StatusCode.ToString() : text));
+        throw new InvalidOperationException(failure + "：" + (string.IsNullOrWhiteSpace(text) ? response.StatusCode.ToString() : text));
     }
 
     public static async Task<(long Up, long Down, int Count)> TrafficAsync(string controller, CancellationToken cancellationToken)

@@ -21,7 +21,9 @@ public sealed record DialerProxyInput(
     int DialIntervalMs = 250,
     int QueueWaitS = 8,
     bool AllowLan = true,
-    string SelectedRelay = "");
+    string SelectedRelay = "",
+    string ExitGroup = "exit-group",
+    string SelectedExit = "");
 
 public sealed record DialerProxyFiles(string Yaml, string LimiterJson, string LimiterPython);
 
@@ -72,14 +74,8 @@ public static class DialerProxyBuilder
         var relay = NormalizeRelayYaml(input.RelayYaml);
         var names = ExtractRelayNames(relay);
         if (names.Count == 0) throw new InvalidOperationException("还没有中转节点。请先导入订阅，再从订阅里选择。");
-        var ordered = new List<string>(names);
-        var selected = (input.SelectedRelay ?? "").Trim();
-        var selectedAt = ordered.FindIndex(name => name == selected);
-        if (selectedAt > 0)
-        {
-            ordered.RemoveAt(selectedAt);
-            ordered.Insert(0, selected);
-        }
+        var ordered = Prefer(names, input.SelectedRelay);
+        var exits = Prefer(names, string.IsNullOrWhiteSpace(input.SelectedExit) ? input.SelectedRelay : input.SelectedExit);
         var homeServer = (input.HomeServer ?? "").Trim();
         var homePort = (input.HomePort ?? "").Trim();
         if (homeServer.Length == 0 || homePort.Length == 0)
@@ -88,6 +84,7 @@ public static class DialerProxyBuilder
         var listen = SplitHostPort(input.LimiterListen, "127.0.0.1", "1994");
         var via = $"127.0.0.1:{input.SocksPort}";
         var group = string.IsNullOrWhiteSpace(input.RelayGroup) ? "relay-group" : input.RelayGroup.Trim();
+        var exit = string.IsNullOrWhiteSpace(input.ExitGroup) ? "exit-group" : input.ExitGroup.Trim();
         var target = string.IsNullOrWhiteSpace(input.TargetName) ? "target-socks5" : input.TargetName.Trim();
         var loop = IPv4.IsMatch(homeServer)
             ? $"IP-CIDR,{homeServer}/32,{group},no-resolve"
@@ -118,6 +115,10 @@ public static class DialerProxyBuilder
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
         foreach (var name in ordered) yaml.AppendLine($"      - {YamlScalar(name)}");
+        yaml.AppendLine($"  - name: {YamlScalar(exit)}");
+        yaml.AppendLine("    type: select");
+        yaml.AppendLine("    proxies:");
+        foreach (var name in exits) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine("  - name: Proxy");
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
@@ -125,6 +126,7 @@ public static class DialerProxyBuilder
         yaml.AppendLine($"      - {YamlScalar(target)}");
         yaml.AppendLine("rules:");
         yaml.AppendLine($"  - {loop}");
+        foreach (var rule in ExitHosts) yaml.AppendLine($"  - {rule},{exit}");
         foreach (var rule in BypassRelay) yaml.AppendLine($"  - {rule},{group}");
         foreach (var rule in BypassDirect) yaml.AppendLine($"  - {rule},DIRECT");
         foreach (var rule in AiRelay) yaml.AppendLine($"  - {rule},{target}");
@@ -183,6 +185,24 @@ public static class DialerProxyBuilder
         return yaml.ToString();
     }
 
+    // Throwaway config that times each subscription node as its own exit. No home SOCKS, so this delay is not the 中转 chain.
+    public static string BuildExitProbe(DialerProxyInput input, string controller)
+    {
+        var relay = NormalizeRelayYaml(input.RelayYaml);
+        if (ExtractRelayNames(relay).Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var yaml = new StringBuilder();
+        yaml.AppendLine("log-level: warning");
+        yaml.AppendLine($"external-controller: {YamlScalar(controller)}");
+        yaml.AppendLine("ipv6: false");
+        yaml.AppendLine("proxies:");
+        yaml.AppendLine(IndentRelay(relay));
+        yaml.AppendLine("rules:");
+        yaml.AppendLine("  - MATCH,DIRECT");
+        return yaml.ToString();
+    }
+
+    public const string ExitTestUrl = "https://downloads.claude.ai";
+
     public static string ProbeName(int index) => "codex-switch-chain-" + index;
 
     public static string LimiterPython()
@@ -193,6 +213,8 @@ public static class DialerProxyBuilder
         return reader.ReadToEnd();
     }
 
+    // Update host leaves at the subscription node. It stays above the claude.ai suffix, which still sends the API through the home SOCKS.
+    private static readonly string[] ExitHosts = ["DOMAIN,downloads.claude.ai"];
     private static readonly string[] BypassRelay =
     [
         "DOMAIN-SUFFIX,docker.io",
@@ -226,6 +248,19 @@ public static class DialerProxyBuilder
     ];
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+
+    private static List<string> Prefer(IReadOnlyList<string> names, string? selected)
+    {
+        var ordered = new List<string>(names);
+        var picked = (selected ?? "").Trim();
+        var at = ordered.FindIndex(name => name == picked);
+        if (at > 0)
+        {
+            ordered.RemoveAt(at);
+            ordered.Insert(0, picked);
+        }
+        return ordered;
+    }
 
     private static (string Host, string Port) SplitHostPort(string value, string host, string port)
     {
