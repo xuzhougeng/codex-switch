@@ -49,6 +49,7 @@ static class MihomoDaemon
             var mihomo = StartMihomo(kernel, store);
             WritePid(store.MihomoPidPath, mihomo.Id);
             Log(store.ServiceLogPath, $"INFO mihomo pid {mihomo.Id} http {settings.HttpPort} kernel {kernel}");
+            await ApplySavedSelectors(store, settings, mihomo, cts.Token);
             try
             {
                 var exit = WaitExit(mihomo, cts.Token);
@@ -83,6 +84,46 @@ static class MihomoDaemon
         finally
         {
             DeleteOwn(store.ServicePidPath);
+        }
+    }
+
+    // cache.db is restored before the controller listens, so a restart would otherwise keep the old node.
+    private static async Task ApplySavedSelectors(ClashProxyStore store, ClashProxySettings settings, Process mihomo, CancellationToken ct)
+    {
+        var wanted = DialerProxyBuilder.LiveSelections(settings);
+        if (wanted.Count == 0) return;
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (true)
+        {
+            if (ct.IsCancellationRequested || mihomo.HasExited) return;
+            try
+            {
+                await ClashApi.GroupAsync(settings.Controller, wanted[0].Group, ct);
+                break;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or TaskCanceledException)
+            {
+                if (DateTime.UtcNow >= deadline)
+                {
+                    Log(store.ServiceLogPath, "ERROR 控制口没有就绪，保存的节点没有下发");
+                    return;
+                }
+                try { await Task.Delay(100, ct); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+        foreach (var (group, name) in wanted)
+        {
+            if (ct.IsCancellationRequested || mihomo.HasExited) return;
+            try
+            {
+                await ClashApi.SelectAsync(settings.Controller, group, name, ct, "下发保存的节点失败");
+                Log(store.ServiceLogPath, "INFO selector " + group + " -> " + name);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+            {
+                Log(store.ServiceLogPath, "ERROR selector " + group + " -> " + name + ": " + ex.Message);
+            }
         }
     }
 

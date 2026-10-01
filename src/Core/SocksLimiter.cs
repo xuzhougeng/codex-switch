@@ -19,7 +19,8 @@ public sealed record SocksLimiterConfig(
     int MaxInflightDials = 1,
     int DialIntervalMs = 250,
     double QueueWaitSeconds = 8,
-    double HandshakeTimeoutSeconds = 20)
+    double HandshakeTimeoutSeconds = 20,
+    double IdleTimeoutSeconds = 60)
 {
     public static SocksLimiterConfig Parse(string json)
     {
@@ -38,7 +39,8 @@ public sealed record SocksLimiterConfig(
             Math.Max(1, (int)Num(root, "max_inflight_dials", 1)),
             Math.Max(0, (int)Num(root, "dial_interval_ms", 250)),
             Num(root, "queue_wait_s", 8),
-            Num(root, "handshake_timeout_s", 20));
+            Num(root, "handshake_timeout_s", 20),
+            Num(root, "idle_timeout_s", 60));
     }
 
     private static string Required(JsonElement root, string name) =>
@@ -221,7 +223,10 @@ public sealed class SocksLimiter : IAsyncDisposable
         }
         catch (TimeoutException ex)
         {
-            log?.Invoke($"WARNING queue timeout dest={dest} {ex.Message}");
+            var idle = ex.Message.StartsWith("idle ", StringComparison.Ordinal);
+            log?.Invoke(idle
+                ? $"WARNING idle timeout dest={dest} {ex.Message}"
+                : $"WARNING queue timeout dest={dest} {ex.Message}");
             if (!replied && clientStream != null) await TryReply(clientStream, RepTtl);
         }
         catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException or InvalidOperationException or EndOfStreamException)
@@ -364,14 +369,51 @@ public sealed class SocksLimiter : IAsyncDisposable
         if (hdr[0] != Ver || hdr[1] != RepOk) throw new IOException($"socks connect rep={hdr[1]} {host}:{port}");
     }
 
-    private static async Task Splice(Socket left, Socket right, CancellationToken ct)
+    // A spliced connection holds a concurrency slot until either side closes. Silence must release that slot
+    // or one stalled stream keeps every new dial queued until the client gives up.
+    private async Task Splice(Socket left, Socket right, CancellationToken ct)
     {
-        var a = Pipe(left, right, ct);
-        var b = Pipe(right, left, ct);
-        await Task.WhenAll(a, b);
+        var idleSeconds = config.IdleTimeoutSeconds;
+        if (idleSeconds <= 0)
+        {
+            await Task.WhenAll(Pipe(left, right, ct, null), Pipe(right, left, ct, null));
+            return;
+        }
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var stamp = new long[1];
+        stamp[0] = StopwatchTimestamp();
+        void Touch() => Volatile.Write(ref stamp[0], StopwatchTimestamp());
+        var pump = Task.WhenAll(Pipe(left, right, idleCts.Token, Touch), Pipe(right, left, idleCts.Token, Touch));
+        var idle = TimeSpan.FromSeconds(idleSeconds);
+        var watch = WatchIdle(() => Volatile.Read(ref stamp[0]), idle, idleCts.Token);
+        var finished = await Task.WhenAny(pump, watch);
+        if (finished == watch && await watch)
+        {
+            idleCts.Cancel();
+            Close(left);
+            Close(right);
+            try { await pump; }
+            catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException or ObjectDisposedException) { }
+            throw new TimeoutException("idle " + idleSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "s");
+        }
+        idleCts.Cancel();
+        try { await watch; } catch (OperationCanceledException) { }
+        await pump;
     }
 
-    private static async Task Pipe(Socket src, Socket dst, CancellationToken ct)
+    private static async Task<bool> WatchIdle(Func<long> last, TimeSpan idle, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var remain = idle - System.Diagnostics.Stopwatch.GetElapsedTime(last());
+            if (remain <= TimeSpan.Zero) return true;
+            try { await Task.Delay(remain, ct); }
+            catch (OperationCanceledException) { return false; }
+        }
+        return false;
+    }
+
+    private static async Task Pipe(Socket src, Socket dst, CancellationToken ct, Action? touch)
     {
         var buf = new byte[65536];
         try
@@ -380,6 +422,7 @@ public sealed class SocksLimiter : IAsyncDisposable
             {
                 var n = await src.ReceiveAsync(buf, SocketFlags.None, ct);
                 if (n == 0) break;
+                touch?.Invoke();
                 var sent = 0;
                 while (sent < n)
                 {

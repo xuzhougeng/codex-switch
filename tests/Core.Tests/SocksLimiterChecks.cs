@@ -35,6 +35,46 @@ static class SocksLimiterChecks
         try { await run.WaitAsync(TimeSpan.FromSeconds(2)); } catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) { }
     }
 
+    public static async Task Idle()
+    {
+        await using var echo = await TinyServer.Echo();
+        await using var upstream = await TinyServer.Socks("user", "secret");
+        await using var via = await TinyServer.Socks(null, null);
+        var logs = new ConcurrentQueue<string>();
+        var config = new SocksLimiterConfig("127.0.0.1", 0, "127.0.0.1", via.Port, "127.0.0.1", upstream.Port, "user", "secret", 1, 1, 0, 2, 3, 0.4);
+        await using var limiter = new SocksLimiter(config, logs.Enqueue);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var run = limiter.RunAsync(cts.Token);
+        await limiter.Started.WaitAsync(cts.Token);
+
+        using (var silent = await Socks.Open("127.0.0.1", limiter.BoundPort, "127.0.0.1", echo.Port, cts.Token))
+        {
+            await WaitActive(limiter, 1, cts.Token);
+            await WaitActive(limiter, 0, cts.Token);
+        }
+        var snapshot = string.Join(" | ", logs);
+        if (!snapshot.Contains("WARNING idle timeout", StringComparison.Ordinal))
+            throw new InvalidOperationException("沉默连接没有空闲超时：" + snapshot);
+
+        logs.Clear();
+        using (var live = await Socks.Open("127.0.0.1", limiter.BoundPort, "127.0.0.1", echo.Port, cts.Token))
+        {
+            var stream = live.GetStream();
+            for (var i = 0; i < 5; i++)
+            {
+                await stream.WriteAsync(new byte[] { (byte)'x' }, cts.Token);
+                await Task.Delay(200, cts.Token);
+            }
+            if (limiter.Active != 1) throw new InvalidOperationException("仍在传数据的连接被空闲超时关掉了");
+        }
+        await WaitActive(limiter, 0, cts.Token);
+        if (string.Join(" | ", logs).Contains("WARNING idle timeout", StringComparison.Ordinal))
+            throw new InvalidOperationException("传数据的连接被记成空闲超时");
+
+        cts.Cancel();
+        try { await run.WaitAsync(TimeSpan.FromSeconds(2)); } catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) { }
+    }
+
     private static async Task WaitActive(SocksLimiter limiter, int expected, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow.AddSeconds(2);

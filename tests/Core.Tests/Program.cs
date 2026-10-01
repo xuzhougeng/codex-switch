@@ -139,6 +139,11 @@ try
     var unsetExit = unset.IndexOf("name: exit-group", StringComparison.Ordinal);
     var unsetProxy = unset.IndexOf("name: Proxy", StringComparison.Ordinal);
     Check(unsetExit >= 0 && unsetProxy > unsetExit && unset[unsetExit..unsetProxy].Contains("proxies:\n      - two\n      - one\n"), "an unscreened exit starts on the relay until its own node is saved");
+    var live = DialerProxyBuilder.LiveSelections(new ClashProxySettings { SelectedRelay = "two", SelectedExit = "one", RelayGroup = "r", ExitGroup = "e" });
+    Check(live.Count == 2 && live[0].Group == "r" && live[0].Name == "two" && live[1].Group == "e" && live[1].Name == "one", "saved relay and exit are both pushed after start");
+    var relayOnly = DialerProxyBuilder.LiveSelections(new ClashProxySettings { SelectedRelay = "two" });
+    Check(relayOnly.Count == 2 && relayOnly[0] == ("relay-group", "two") && relayOnly[1] == ("exit-group", "two"), "an unset exit is pushed to the same node as the relay");
+    Check(DialerProxyBuilder.LiveSelections(new ClashProxySettings()).Count == 0, "nothing is pushed when no node is saved");
     var unicode = DialerProxyBuilder.ExtractRelayNames("- name: 🇦🇺 AU1 澳大利亚\n  type: ss\n- name: \"🇺🇸 US 01\"\n  type: ss\n");
     Check(unicode.Count == 2 && unicode[0] == "🇦🇺 AU1 澳大利亚" && unicode[1] == "🇺🇸 US 01", "relay names keep the full UTF-8 label");
     var aligned = DialerProxyBuilder.Build(new DialerProxyInput("  - name: 🇦🇺 AU1 澳大利亚\n    type: http\n    server: example.com\n    port: 1\n", "203.0.113.10", "1080", "", "")).Yaml.Replace("\r\n", "\n");
@@ -255,6 +260,8 @@ try
 
     await SocksLimiterChecks.Run();
     Console.WriteLine("PASS in-process limiter forwards through the first hop and times out the queue");
+    await SocksLimiterChecks.Idle();
+    Console.WriteLine("PASS a silent spliced connection releases its slot and a busy one keeps it");
 
     Console.WriteLine("All core integration checks passed. Only synthetic credentials were used.");
 }

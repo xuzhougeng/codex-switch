@@ -143,7 +143,8 @@ public static class DialerProxyBuilder
             ["max_inflight_dials"] = input.MaxInflightDials,
             ["dial_interval_ms"] = input.DialIntervalMs,
             ["queue_wait_s"] = input.QueueWaitS,
-            ["handshake_timeout_s"] = 20
+            ["handshake_timeout_s"] = 20,
+            ["idle_timeout_s"] = 60
         };
 
         return new DialerProxyFiles(yaml.ToString(), JsonSerializer.Serialize(limiter, Json) + "\n", LimiterPython());
@@ -248,6 +249,21 @@ public static class DialerProxyBuilder
     ];
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
+
+    // mihomo remembers the last selector in cache.db and ignores YAML order after a restart.
+    // These are the group/name pairs serve must push once the controller is up.
+    public static IReadOnlyList<(string Group, string Name)> LiveSelections(ClashProxySettings settings)
+    {
+        var relayGroup = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup.Trim();
+        var exitGroup = string.IsNullOrWhiteSpace(settings.ExitGroup) ? "exit-group" : settings.ExitGroup.Trim();
+        var relay = (settings.SelectedRelay ?? "").Trim();
+        var exit = (settings.SelectedExit ?? "").Trim();
+        if (exit.Length == 0) exit = relay;
+        var list = new List<(string Group, string Name)>();
+        if (relay.Length > 0) list.Add((relayGroup, relay));
+        if (exit.Length > 0) list.Add((exitGroup, exit));
+        return list;
+    }
 
     private static List<string> Prefer(IReadOnlyList<string> names, string? selected)
     {

@@ -228,9 +228,24 @@ sealed class MihomoTui
         settings.SelectedRelay = bestName;
         local.Store.Save(settings);
         var status = local.Service.Status();
-        if (status.Running) local.Restart(settings);
-        else local.Start(settings);
-        Pause(bestName + "  整条链路 " + bestDelay + " ms，已保存并生效。");
+        var timed = bestName + "  整条链路 " + bestDelay + " ms";
+        if (!status.Running)
+        {
+            local.Start(settings);
+            Pause(timed + "，已保存并生效。");
+            return;
+        }
+        var group = string.IsNullOrWhiteSpace(settings.RelayGroup) ? "relay-group" : settings.RelayGroup;
+        try
+        {
+            await ClashApi.SelectAsync(settings.Controller, group, bestName, CancellationToken.None);
+            Pause(timed + "，已切到运行中的服务。");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException)
+        {
+            if (Confirm("没有切到运行中的服务。现在重启？")) Pause(local.Restart(settings).Detail);
+            else Pause(timed + "，已保存。重启后会下发这个节点。");
+        }
     }
 
     private async Task SwitchRelay(ClashProxySettings settings)
