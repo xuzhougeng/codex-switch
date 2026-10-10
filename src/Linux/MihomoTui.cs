@@ -29,7 +29,7 @@ sealed class MihomoTui
             var menu = new List<(string Label, string Hint)>();
             if (status.Running) menu.AddRange([("重启", "应用改过的配置"), ("停止", "")]);
             else menu.Add(("启动", "后台运行 mihomo 和限流"));
-            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("第一代理", "更新直出 · 自动测速"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
+            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("第一代理", "其他 AI · 不含香港"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
             if (status.Running) menu.Add(("运行详情", "进程与当前连接"));
             menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
                 ("开机启动", "systemd 用户服务"), ("退出", "")]);
@@ -72,7 +72,7 @@ sealed class MihomoTui
     public static string Chain(ClashProxySettings settings)
     {
         var home = string.IsNullOrWhiteSpace(settings.HomeServer) ? "家宽未填写" : settings.HomeServer + ":" + settings.HomePort;
-        return "Codex / Claude → http://127.0.0.1:" + settings.HttpPort
+        return "Claude → http://127.0.0.1:" + settings.HttpPort
             + " → 限流 " + settings.LimiterListen
             + " → 一跳 127.0.0.1:" + settings.SocksPort
             + " → " + home;
@@ -83,8 +83,9 @@ sealed class MihomoTui
     {
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         var current = names.Contains(settings.SelectedRelay) ? settings.SelectedRelay : names.FirstOrDefault() ?? "";
-        var exitChosen = names.Contains(settings.SelectedExit);
-        var exit = exitChosen ? settings.SelectedExit : names.FirstOrDefault() ?? "";
+        var ai = DialerProxyBuilder.WithoutHongKong(names);
+        var exitChosen = ai.Contains(settings.SelectedExit);
+        var exit = names.Count == 0 ? "" : DialerProxyBuilder.Preferred(ai.Count > 0 ? ai : names, settings.SelectedExit, settings.SelectedRelay);
         var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "关";
         var pace = ReadPace(status);
         var grid = new Grid()
@@ -97,17 +98,17 @@ sealed class MihomoTui
         Row("状态", status.Running ? "[bold green]● 运行中[/]" : "[bold yellow]○ 未运行[/]",
             (pace == null ? "" : pace + " · ") + "开机自启 " + boot);
         grid.AddEmptyRow();
-        Row("入口", Markup.Escape("127.0.0.1:" + settings.HttpPort), "Codex / Claude 的 HTTP 代理");
+        Row("入口", Markup.Escape("127.0.0.1:" + settings.HttpPort), "客户端的 HTTP 代理");
         Row("限流", Markup.Escape(settings.LimiterListen),
             "并发 " + settings.MaxConcurrent + " · 间隔 " + settings.DialIntervalMs + " ms · 排队 " + settings.QueueWaitS + " s");
         Row("一跳", Markup.Escape("127.0.0.1:" + settings.SocksPort), names.Count == 0
             ? "[yellow]先填订阅[/]"
             : "[bold default]" + Markup.Escape(Plain(current)) + "[/] · 订阅 " + names.Count + " 个");
-        Row("更新", names.Count == 0 ? "[yellow]先填订阅[/]" : "[bold default]" + Markup.Escape(Plain(exit)) + "[/]",
-            exitChosen ? "直出 downloads.claude.ai" : "未测速 · 直出 downloads.claude.ai");
+        Row("AI", names.Count == 0 ? "[yellow]先填订阅[/]" : "[bold default]" + Markup.Escape(Plain(exit)) + "[/]",
+            exitChosen ? "单跳 · 不含香港" : "未指定 · 单跳 · 不含香港");
         Row("家宽", string.IsNullOrWhiteSpace(settings.HomeServer)
             ? "[yellow]未填写[/]"
-            : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), "SOCKS5");
+            : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), "Anthropic 的第二跳");
         grid.AddEmptyRow();
         try
         {
@@ -312,12 +313,12 @@ sealed class MihomoTui
         while (true)
         {
             AnsiConsole.Clear();
-            var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
-            var current = names.Contains(settings.SelectedExit) ? settings.SelectedExit : "未测速";
+            var names = DialerProxyBuilder.WithoutHongKong(DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml));
+            var current = names.Contains(settings.SelectedExit) ? settings.SelectedExit : "未指定";
             AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
-            AnsiConsole.MarkupLine("[grey62]直出 downloads.claude.ai，不进家宽[/]");
+            AnsiConsole.MarkupLine("[grey62]OpenAI、Gemini、xAI、Cursor、Copilot 和 Claude 更新。不进家宽，不含香港[/]");
             string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
-            var index = Pick(new[] { Row("自动", "测到更新地址，留下最快的"), Row("手动", "从列表指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]第一代理[/]");
+            var index = Pick(new[] { Row("自动", "测到更新地址，跳过香港"), Row("手动", "从非香港节点指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]第一代理[/]");
             if (index < 0 || actions[index] == "返回") return;
             if (actions[index] == "自动") await ProbeAndSelectExit(settings);
             else await ChooseExit(settings);
@@ -326,15 +327,16 @@ sealed class MihomoTui
 
     private async Task ProbeAndSelectExit(ClashProxySettings settings)
     {
-        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
-        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var names = DialerProxyBuilder.WithoutHongKong(DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml));
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有非香港节点。");
         var bestName = "";
         var bestDelay = int.MaxValue;
         var finished = 0;
-        await AnsiConsole.Status().StartAsync("测直出：本机 → 节点 → downloads.claude.ai", async ctx =>
+        await AnsiConsole.Status().StartAsync("测直出：本机 → 非香港节点 → downloads.claude.ai", async ctx =>
         {
             await MihomoDaemon.ProbeExitsAsync(local.Store, settings, 5000, (name, delay) =>
             {
+                if (DialerProxyBuilder.IsHongKong(name)) return;
                 lock (names)
                 {
                     finished++;
@@ -347,14 +349,14 @@ sealed class MihomoTui
                 }
             });
         });
-        if (bestName.Length == 0) throw new InvalidOperationException("没有节点在 5 秒内连上 downloads.claude.ai。");
+        if (bestName.Length == 0) throw new InvalidOperationException("没有非香港节点在 5 秒内连上 downloads.claude.ai。");
         await ApplyExit(settings, bestName, bestDelay);
     }
 
     private async Task ChooseExit(ClashProxySettings settings)
     {
-        var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
-        if (names.Count == 0) throw new InvalidOperationException("订阅里没有节点。");
+        var names = DialerProxyBuilder.WithoutHongKong(DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml));
+        if (names.Count == 0) throw new InvalidOperationException("订阅里没有非香港节点。");
         var picked = await PickAndProbe(names,
             names.Contains(settings.SelectedExit) ? settings.SelectedExit : names[0],
             "选择第一代理",
@@ -366,6 +368,7 @@ sealed class MihomoTui
     // Saved apart from the 中转. A running service switches exit-group live; a stopped one waits for the next start.
     private async Task ApplyExit(ClashProxySettings settings, string name, int? delay)
     {
+        if (DialerProxyBuilder.IsHongKong(name)) throw new InvalidOperationException("香港节点不能作为 AI 出口。");
         settings.SelectedExit = name;
         local.Store.Save(settings);
         var timed = delay is int measured ? name + "  直出 " + measured + " ms" : "";

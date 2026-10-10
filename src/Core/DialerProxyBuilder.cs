@@ -75,7 +75,13 @@ public static class DialerProxyBuilder
         var names = ExtractRelayNames(relay);
         if (names.Count == 0) throw new InvalidOperationException("还没有中转节点。请先导入订阅，再从订阅里选择。");
         var ordered = Prefer(names, input.SelectedRelay);
-        var exits = Prefer(names, string.IsNullOrWhiteSpace(input.SelectedExit) ? input.SelectedRelay : input.SelectedExit);
+        var overseas = WithoutHongKong(names);
+        var aiCandidates = overseas.Count > 0 ? overseas : new List<string>(names);
+        var exits = Prefer(aiCandidates, Preferred(aiCandidates, input.SelectedExit, input.SelectedRelay));
+        var hk = new List<string>();
+        foreach (var name in names)
+            if (IsHongKong(name)) hk.Add(name);
+        hk.Add("DIRECT");
         var homeServer = (input.HomeServer ?? "").Trim();
         var homePort = (input.HomePort ?? "").Trim();
         if (homeServer.Length == 0 || homePort.Length == 0)
@@ -119,17 +125,17 @@ public static class DialerProxyBuilder
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
         foreach (var name in exits) yaml.AppendLine($"      - {YamlScalar(name)}");
-        yaml.AppendLine("  - name: Proxy");
+        yaml.AppendLine($"  - name: {HkGroup}");
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
-        foreach (var name in ordered) yaml.AppendLine($"      - {YamlScalar(name)}");
-        yaml.AppendLine($"      - {YamlScalar(target)}");
+        foreach (var name in hk) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine("rules:");
         yaml.AppendLine($"  - {loop}");
         foreach (var rule in ExitHosts) yaml.AppendLine($"  - {rule},{exit}");
-        foreach (var rule in BypassRelay) yaml.AppendLine($"  - {rule},{group}");
+        foreach (var rule in AnthropicHome) yaml.AppendLine($"  - {rule},{target}");
+        foreach (var rule in OtherAi) yaml.AppendLine($"  - {rule},{exit}");
+        foreach (var rule in HongKongOk) yaml.AppendLine($"  - {rule},{HkGroup}");
         foreach (var rule in BypassDirect) yaml.AppendLine($"  - {rule},DIRECT");
-        foreach (var rule in AiRelay) yaml.AppendLine($"  - {rule},{target}");
         yaml.AppendLine("  - MATCH,DIRECT");
 
         var limiter = new Dictionary<string, object>
@@ -203,6 +209,36 @@ public static class DialerProxyBuilder
     }
 
     public const string ExitTestUrl = "https://downloads.claude.ai";
+    public const string HkGroup = "hk-group";
+
+    // Hong Kong is not on the OpenAI or Anthropic supported lists, and Gemini's API list omits it too.
+    // A node is Hong Kong when its label says so. "HK" must be its own token, so a name like "checkpoint" is left alone.
+    public static bool IsHongKong(string? name)
+    {
+        var text = name ?? "";
+        if (text.Contains("🇭🇰") || text.Contains("香港")) return true;
+        if (text.Contains("Hong Kong", StringComparison.OrdinalIgnoreCase)) return true;
+        if (text.Contains("HongKong", StringComparison.OrdinalIgnoreCase)) return true;
+        return HongKongCode.IsMatch(text);
+    }
+
+    public static List<string> WithoutHongKong(IReadOnlyList<string> names)
+    {
+        var list = new List<string>();
+        foreach (var name in names)
+            if (!IsHongKong(name)) list.Add(name);
+        return list;
+    }
+
+    // First choice that is actually in the candidate list, otherwise the first candidate.
+    public static string Preferred(IReadOnlyList<string> candidates, string? first, string? second)
+    {
+        var primary = (first ?? "").Trim();
+        if (primary.Length > 0 && candidates.Contains(primary)) return primary;
+        var fallback = (second ?? "").Trim();
+        if (fallback.Length > 0 && candidates.Contains(fallback)) return fallback;
+        return candidates.Count > 0 ? candidates[0] : "";
+    }
 
     public static string ProbeName(int index) => "codex-switch-chain-" + index;
 
@@ -214,9 +250,48 @@ public static class DialerProxyBuilder
         return reader.ReadToEnd();
     }
 
-    // Update host leaves at the subscription node. It stays above the claude.ai suffix, which still sends the API through the home SOCKS.
+    // Claude's update CDN is a large download. It stays above the claude.ai suffix so it does not enter the residential hop.
     private static readonly string[] ExitHosts = ["DOMAIN,downloads.claude.ai"];
-    private static readonly string[] BypassRelay =
+    // Anthropic blocks Hong Kong and treats datacenter exits as a ban risk. Only these domains take the US residential hop.
+    private static readonly string[] AnthropicHome =
+    [
+        "DOMAIN-SUFFIX,anthropic.com",
+        "DOMAIN-SUFFIX,claude.ai",
+        "DOMAIN-SUFFIX,claude.com",
+        "DOMAIN-SUFFIX,claudeusercontent.com"
+    ];
+    // OpenAI, Gemini API, xAI, Cursor, and Copilot block or omit Hong Kong, and a normal node is enough.
+    // google.com and googleapis.com are not listed: Gmail and the rest of Google are not AI exits.
+    // The Copilot proxy host is exact so it wins over the githubusercontent.com suffix below.
+    private static readonly string[] OtherAi =
+    [
+        "DOMAIN-SUFFIX,openai.com",
+        "DOMAIN-SUFFIX,chatgpt.com",
+        "DOMAIN-SUFFIX,oaistatic.com",
+        "DOMAIN-SUFFIX,oaiusercontent.com",
+        "DOMAIN-SUFFIX,sora.com",
+        "DOMAIN-SUFFIX,chat.com",
+        "DOMAIN-SUFFIX,ai.com",
+        "DOMAIN-SUFFIX,gemini.google.com",
+        "DOMAIN-SUFFIX,generativelanguage.googleapis.com",
+        "DOMAIN-SUFFIX,ai.google.dev",
+        "DOMAIN-SUFFIX,aistudio.google.com",
+        "DOMAIN-SUFFIX,makersuite.google.com",
+        "DOMAIN-SUFFIX,alkalimakersuite-pa.clients6.google.com",
+        "DOMAIN-SUFFIX,deepmind.google",
+        "DOMAIN-SUFFIX,notebooklm.google.com",
+        "DOMAIN-SUFFIX,notebooklm.google",
+        "DOMAIN-SUFFIX,bard.google.com",
+        "DOMAIN-SUFFIX,x.ai",
+        "DOMAIN-SUFFIX,grok.com",
+        "DOMAIN-SUFFIX,cursor.sh",
+        "DOMAIN-SUFFIX,cursor.com",
+        "DOMAIN-SUFFIX,cursorapi.com",
+        "DOMAIN,copilot-proxy.githubusercontent.com",
+        "DOMAIN-SUFFIX,githubcopilot.com"
+    ];
+    // Not an AI exit. Hong Kong or a direct connection are both acceptable.
+    private static readonly string[] HongKongOk =
     [
         "DOMAIN-SUFFIX,docker.io",
         "DOMAIN,api.github.com",
@@ -231,22 +306,7 @@ public static class DialerProxyBuilder
         "DOMAIN-SUFFIX,apple-relay.cloudflare.com",
         "DOMAIN-SUFFIX,guzzoni.apple.com"
     ];
-    private static readonly string[] AiRelay =
-    [
-        "DOMAIN-SUFFIX,openai.com",
-        "DOMAIN-SUFFIX,chatgpt.com",
-        "DOMAIN-SUFFIX,ai.com",
-        "DOMAIN-SUFFIX,anthropic.com",
-        "DOMAIN-SUFFIX,claude.ai",
-        "DOMAIN-SUFFIX,claude.com",
-        "DOMAIN-SUFFIX,x.ai",
-        "DOMAIN-SUFFIX,grok.com",
-        "DOMAIN-SUFFIX,googleapis.com",
-        "DOMAIN-SUFFIX,google.com",
-        "DOMAIN-SUFFIX,gemini.google.com",
-        "DOMAIN-SUFFIX,cursor.sh",
-        "DOMAIN-SUFFIX,githubcopilot.com"
-    ];
+    private static readonly Regex HongKongCode = new(@"(^|[^A-Za-z])HK\d*([^A-Za-z]|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
@@ -258,7 +318,7 @@ public static class DialerProxyBuilder
         var exitGroup = string.IsNullOrWhiteSpace(settings.ExitGroup) ? "exit-group" : settings.ExitGroup.Trim();
         var relay = (settings.SelectedRelay ?? "").Trim();
         var exit = (settings.SelectedExit ?? "").Trim();
-        if (exit.Length == 0) exit = relay;
+        if (exit.Length == 0 || IsHongKong(exit)) exit = IsHongKong(relay) ? "" : relay;
         var list = new List<(string Group, string Name)>();
         if (relay.Length > 0) list.Add((relayGroup, relay));
         if (exit.Length > 0) list.Add((exitGroup, exit));

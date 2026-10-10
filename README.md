@@ -2,14 +2,14 @@
 
 本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**，Linux 使用终端界面管理 mihomo。原 PowerShell 命令行继续保留。
 
-当前版本 **0.3.1**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.3.1)
+当前版本 **0.3.2**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.3.2)
 
 | 包 | 平台 |
 | --- | --- |
-| `CodexSwitch-0.3.1-windows-x64.zip` | Windows x64 |
-| `CodexSwitch-0.3.1-macos-arm64.zip` | macOS Apple Silicon |
-| `CodexSwitch-0.3.1-linux-x64.tar.gz` | Linux x64，含 mihomo |
-| `CodexSwitch-0.3.1-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
+| `CodexSwitch-0.3.2-windows-x64.zip` | Windows x64 |
+| `CodexSwitch-0.3.2-macos-arm64.zip` | macOS Apple Silicon |
+| `CodexSwitch-0.3.2-linux-x64.tar.gz` | Linux x64，含 mihomo |
+| `CodexSwitch-0.3.2-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
 
 原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 
@@ -40,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 Linux 用终端界面管理 mihomo，形态接近 [ShellCrash](https://github.com/juewuy/ShellCrash) 的纯净模式：启动、停止、重启、节点、端口、日志、内核和用户级开机启动。它不改防火墙，也不做透明代理。
 
-核心链路按端口直接接好。Codex / Claude 走 HTTP 端口，AI 目标在本机限流后，经 mihomo 的一跳 SOCKS 出去，再进美国家宽。限流跑在 `codex-switch serve` 进程里，不生成、也不再执行 `socks-limiter.py` 或 `start-ai.sh`。
+核心链路按端口直接接好。客户端走 HTTP 端口。Anthropic 在本机限流后，经 mihomo 的一跳 SOCKS 出去，再进美国家宽。OpenAI、Gemini、xAI、Cursor、Copilot 只走一条非香港节点，不进家宽。GitHub 和 Docker 可以走香港节点，其余流量直连。限流跑在 `codex-switch serve` 进程里，不生成、也不再执行 `socks-limiter.py` 或 `start-ai.sh`。
 
 官方 mihomo 内核放在 `src/Linux/kernel/`（当前 v1.19.31，GPL-3.0）。启动时优先用这份内核；配置里填了绝对路径时才改用别的。
 
@@ -68,7 +68,7 @@ export https_proxy=http://127.0.0.1:1990
 
 `codex-switch shell`（菜单里的 Shell 命令）把这两行包成 `~/.local/bin/function.sh` 的 `claude` 和 `codex` 函数，并在 `.zshrc` / `.bashrc` 里加一行 source，端口从运行中的服务读。
 
-节点里填写并刷新订阅。切换第一跳可以选择自动或手动：自动按整条链路（本机 → 中转 → 美国家宽 → 测试地址）测延迟，留下总延迟最低的中转；手动从订阅里指定一个，列表里按 `t` 测当前节点、按 `a` 测全部后再回车选定。第一代理同样可以自动或手动，测的是直出 `downloads.claude.ai`。服务在跑时手动切换立即生效并写入配置，没启动时只保存、下次启动再用。测速在一个临时 mihomo 里进行，不动运行中的服务；家宽密码只写进测完即删的 0700 临时目录，仍不进 `ai.yaml`。
+节点里填写并刷新订阅。切换第一跳可以选择自动或手动：自动按整条链路（本机 → 中转 → 美国家宽 → 测试地址）测延迟，留下总延迟最低的中转；手动从订阅里指定一个，列表里按 `t` 测当前节点、按 `a` 测全部后再回车选定。第一代理是其他 AI 的单跳出口，自动或手动都可以，测的是直出 `downloads.claude.ai`，香港节点不参与。服务在跑时手动切换立即生效并写入配置，没启动时只保存、下次启动再用。测速在一个临时 mihomo 里进行，不动运行中的服务；家宽密码只写进测完即删的 0700 临时目录，仍不进 `ai.yaml`。
 
 配置和运行文件在 `~/.config/codex-switch/`（`clash-proxy.json` 和 `clash/ai.yaml`），不写进 `~/.codex`。已经存在的旧目录会在第一次启动时复制过去。退出菜单后服务继续运行；`codex-switch stop` 或菜单里的停止会关掉它。开机启动写的是 `~/.config/systemd/user/codex-mihomo.service`。
 
@@ -114,7 +114,7 @@ open "dist/macos/Codex Switch.app"
 - 启动后 Codex 走 `http://127.0.0.1:1990`。请自行设置 `http_proxy` / `https_proxy`，或在系统代理中指向该端口
 - Windows 和 macOS 需要本机已安装 `mihomo` 和 `python3`（Windows 为 `python`）。也可在页面填写绝对路径。Linux 终端版自带 mihomo，并在进程内做限流
 
-限流器把打向家宽的新建连接排队，避免 Claude / Codex 把住宅 SOCKS5 打满后出现中途断流。
+限流器把打向家宽的新建连接排队，避免 Claude 把住宅 SOCKS5 打满后出现中途断流。
 
 切换完成后，需要用户完全退出并重新打开 Codex。工具不会关闭、启动或修改 Codex / ChatGPT 桌面应用，也无法保证桌面应用的独立登录缓存会立即接受文件切换。macOS 钥匙串等系统凭据存储不在本工具管理范围内；采用系统凭据存储时，请先确认 Codex 配置为文件存储。工具不会自动改写该配置。
 

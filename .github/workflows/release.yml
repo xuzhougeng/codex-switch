@@ -94,7 +94,7 @@ jobs:
 
           Windows 和 macOS 是 Codex 账号切换。Linux 是 mihomo 终端管理，包内带有 mihomo v1.19.31，按端口接管 Codex / Claude 流量。
 
-          Linux 此版本：启动后把保存的第一跳和更新出口下发给正在运行的内核，避免 cache.db 盖过配置；自动测速后直接切换；已转发的连接若 60 秒没有数据就释放并发槽。
+          Linux 此版本：只有 Anthropic 走美国家宽双跳。OpenAI、Gemini、xAI、Cursor、Copilot 走一条非香港节点。GitHub 和 Docker 可以走香港，其余流量直连。
 
           | 包 | 平台 |
           | --- | --- |

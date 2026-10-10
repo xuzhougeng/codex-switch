@@ -68,15 +68,34 @@ public enum DialerProxyBuilder {
         yaml += "external-controller: \(scalar(input.controller))\nipv6: false\ntcp-concurrent: false\nkeep-alive-idle: 15\nkeep-alive-interval: 15\nproxies:\n"
         yaml += indent(relay) + "\n"
         yaml += "  - name: \(scalar(target))\n    type: socks5\n    server: \(listen.host)\n    port: \(listen.port)\n    udp: false\n    ip-version: ipv4\n"
+        let overseas = names.filter { !isHongKong($0) }
+        let ai = overseas.isEmpty ? names : overseas
+        let hk = names.filter { isHongKong($0) }
         yaml += "proxy-groups:\n  - name: \(scalar(group))\n    type: select\n    proxies:\n"
         for name in names { yaml += "      - \(scalar(name))\n" }
-        yaml += "  - name: Proxy\n    type: select\n    proxies:\n"
-        for name in names { yaml += "      - \(scalar(name))\n" }
-        yaml += "      - \(scalar(target))\nrules:\n  - \(loop)\n"
-        for rule in ["DOMAIN-SUFFIX,docker.io", "DOMAIN,api.github.com"] { yaml += "  - \(rule),\(group)\n" }
-        for rule in ["DOMAIN-SUFFIX,openai.com", "DOMAIN-SUFFIX,chatgpt.com", "DOMAIN-SUFFIX,anthropic.com",
-                     "DOMAIN-SUFFIX,claude.ai", "DOMAIN-SUFFIX,x.ai", "DOMAIN-SUFFIX,grok.com"] {
+        yaml += "  - name: exit-group\n    type: select\n    proxies:\n"
+        for name in ai { yaml += "      - \(scalar(name))\n" }
+        yaml += "  - name: hk-group\n    type: select\n    proxies:\n"
+        for name in hk { yaml += "      - \(scalar(name))\n" }
+        yaml += "      - DIRECT\nrules:\n  - \(loop)\n"
+        yaml += "  - DOMAIN,downloads.claude.ai,exit-group\n"
+        for rule in ["DOMAIN-SUFFIX,anthropic.com", "DOMAIN-SUFFIX,claude.ai", "DOMAIN-SUFFIX,claude.com", "DOMAIN-SUFFIX,claudeusercontent.com"] {
             yaml += "  - \(rule),\(target)\n"
+        }
+        for rule in ["DOMAIN-SUFFIX,openai.com", "DOMAIN-SUFFIX,chatgpt.com", "DOMAIN-SUFFIX,oaistatic.com", "DOMAIN-SUFFIX,oaiusercontent.com",
+                     "DOMAIN-SUFFIX,sora.com", "DOMAIN-SUFFIX,chat.com", "DOMAIN-SUFFIX,ai.com", "DOMAIN-SUFFIX,gemini.google.com",
+                     "DOMAIN-SUFFIX,generativelanguage.googleapis.com", "DOMAIN-SUFFIX,ai.google.dev", "DOMAIN-SUFFIX,aistudio.google.com",
+                     "DOMAIN-SUFFIX,makersuite.google.com", "DOMAIN-SUFFIX,alkalimakersuite-pa.clients6.google.com", "DOMAIN-SUFFIX,deepmind.google",
+                     "DOMAIN-SUFFIX,notebooklm.google.com", "DOMAIN-SUFFIX,notebooklm.google", "DOMAIN-SUFFIX,bard.google.com",
+                     "DOMAIN-SUFFIX,x.ai", "DOMAIN-SUFFIX,grok.com", "DOMAIN-SUFFIX,cursor.sh", "DOMAIN-SUFFIX,cursor.com", "DOMAIN-SUFFIX,cursorapi.com",
+                     "DOMAIN,copilot-proxy.githubusercontent.com", "DOMAIN-SUFFIX,githubcopilot.com"] {
+            yaml += "  - \(rule),exit-group\n"
+        }
+        for rule in ["DOMAIN-SUFFIX,docker.io", "DOMAIN,api.github.com", "DOMAIN-SUFFIX,github.com", "DOMAIN-SUFFIX,githubusercontent.com", "DOMAIN-SUFFIX,github.io"] {
+            yaml += "  - \(rule),hk-group\n"
+        }
+        for rule in ["DOMAIN-SUFFIX,apple-relay.apple.com", "DOMAIN-SUFFIX,apple-relay.fastly-edge.com", "DOMAIN-SUFFIX,apple-relay.cloudflare.com", "DOMAIN-SUFFIX,guzzoni.apple.com"] {
+            yaml += "  - \(rule),DIRECT\n"
         }
         yaml += "  - MATCH,DIRECT\n"
         let limiter: [String: Any] = [
@@ -95,6 +114,14 @@ public enum DialerProxyBuilder {
             return ""
         }
         return text
+    }
+
+    // Same label rule as DialerProxyBuilder.cs. HK must be its own token.
+    private static func isHongKong(_ name: String) -> Bool {
+        if name.contains("🇭🇰") || name.contains("香港") || name.localizedCaseInsensitiveContains("Hong Kong") || name.localizedCaseInsensitiveContains("HongKong") {
+            return true
+        }
+        return name.range(of: #"(^|[^A-Za-z])HK\d*([^A-Za-z]|$)"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private static func indent(_ relay: String) -> String {

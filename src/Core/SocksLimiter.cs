@@ -72,7 +72,7 @@ public sealed record SocksLimiterConfig(
 
 /// <summary>
 /// Local SOCKS5 that paces dials to a residential proxy.
-/// mihomo sends AI destinations here. Each dial goes out through mihomo's first-hop SOCKS, then the residential SOCKS.
+/// mihomo sends Anthropic here. Each dial goes out through mihomo's first-hop SOCKS, then the residential SOCKS.
 /// </summary>
 public sealed class SocksLimiter : IAsyncDisposable
 {
