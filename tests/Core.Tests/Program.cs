@@ -123,8 +123,8 @@ try
     Check(!built.Yaml.Contains("DOMAIN-SUFFIX,google.com,"), "plain google traffic is not an AI exit");
     Check(built.Yaml.Contains("DOMAIN-SUFFIX,generativelanguage.googleapis.com,exit-group"), "gemini api uses the non-hong-kong hop");
     Check(built.Yaml.Contains("DOMAIN,api.github.com,hk-group"), "github may leave through hong kong");
-    Check(built.Yaml.Contains("\n  - MATCH,DIRECT\n"), "other traffic can go direct");
     var rules = built.Yaml.Replace("\r\n", "\n");
+    Check(rules.Contains("\n  - MATCH,DIRECT\n"), "other traffic can go direct");
     var claudeUpdate = rules.IndexOf("DOMAIN,downloads.claude.ai,exit-group", StringComparison.Ordinal);
     var claudeApi = rules.IndexOf("DOMAIN-SUFFIX,claude.ai,target-socks5", StringComparison.Ordinal);
     var copilot = rules.IndexOf("DOMAIN,copilot-proxy.githubusercontent.com,exit-group", StringComparison.Ordinal);
