@@ -57,6 +57,7 @@ final class AccountStoreTests: XCTestCase {
         let store = ClashProxyStore(home: root)
         var settings = ClashProxySettings()
         settings.relayYaml = "  - name: relay-hk-01\n    type: ss\n    server: r.example\n    port: 1\n"
+        settings.useHomeProxy = true
         settings.homeServer = "home.example.com"
         settings.homePort = "1080"
         try await store.save(settings)

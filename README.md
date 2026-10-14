@@ -74,6 +74,16 @@ export https_proxy=http://127.0.0.1:1990
 
 ## macOS
 
+macOS App 可以独立管理 mihomo，无需启动 Clash Verge。打开后默认进入代理页：导入 Clash YAML 订阅或文件、选择节点、启动代理，再点击「开启系统代理」。系统会请求管理员授权；关闭代理时恢复之前的 HTTP、HTTPS、SOCKS、PAC 和代理例外设置。退出 App 后后台代理继续运行，菜单栏可重新打开窗口或停止代理。
+
+- 普通代理不需要家宽或 Python。新配置默认让其他网站也使用代理；设置中可改为仅 AI 分流。
+- 在「设置 → SOCKS5 出口」保存、编辑和切换多个代理；支持链接导入、手动填写及密码显隐。旧家宽配置自动保留为一个配置。每个配置可经当前中转节点测试完整链路，显示成功延迟或失败原因；运行中的代理需重启后应用 SOCKS5 配置变更。
+- 可选家宽双跳沿用 Linux TUI 的规则与限流，开启后需要 Python 3。第一跳测完整链路，第一代理测单跳；支持单节点、全部测速、自动选择最快和运行中切换。测速使用隔离的临时内核。
+- 设置页提供内核下载/更新、配置检查、自定义路径、端口与限流、Shell 命令安装，以及 launchd 用户登录自启动；连接和日志页显示实时状态。
+- 登录自启动只启动后台代理；系统代理仍需单独开启。启用登录自启动前，请将 App 放在固定位置。
+- 构建时可通过 `MIHOMO_BINARY=/path/to/mihomo MIHOMO_LICENSE=/path/to/LICENSE bash scripts/build-macos.sh` 内置内核；未内置时可在 App 设置里下载官方内核。
+
+
 支持 macOS 13+，需要 Xcode 15+ 或相应 Swift 工具链。在 Mac 上运行：
 
 ```bash
@@ -83,7 +93,7 @@ open "dist/macos/Codex Switch.app"
 
 脚本先执行 Swift 测试，再生成当前 Mac 架构的 `.app` 并添加本地 ad-hoc 签名。对外分发仍需要 Developer ID 签名与 Apple 公证。开发时可在 Xcode 打开 `src/macOS/Package.swift`，或运行 `cd src/macOS && swift run`。
 
-**验证边界：SwiftUI 已通过 GitHub Actions 的 macOS 15 编译、存储层测试和 `.app` 打包。尚未完成 Mac 界面实测和真实浏览器登录验证。** Windows 版已在本机启动并使用虚拟账号验证搜索与切换。
+**验证：macOS 原生 App 支持 Swift 单元测试与可选真实内核集成测试。系统代理的管理员授权和真实浏览器登录需要在用户会话中验证。** Windows 版已在本机启动并使用虚拟账号验证搜索与切换。
 
 ## 账号数据与行为
 
@@ -112,7 +122,7 @@ open "dist/macos/Codex Switch.app"
 - 配置保存在 `~/.codex/codex-switch/clash-proxy.json`（含家宽凭据，权限 0600）
 - 生成文件在 `~/.codex/codex-switch/clash/`：`ai.yaml`、`socks-limiter.py`、`socks-limiter.json`
 - 启动后 Codex 走 `http://127.0.0.1:1990`。请自行设置 `http_proxy` / `https_proxy`，或在系统代理中指向该端口
-- Windows 和 macOS 需要本机已安装 `mihomo` 和 `python3`（Windows 为 `python`）。也可在页面填写绝对路径。Linux 终端版自带 mihomo，并在进程内做限流
+- Windows 需要本机已安装 `mihomo` 和 `python`；macOS 可内置或在线下载 mihomo，仅家宽双跳需要 Python 3。也可在页面填写绝对路径。Linux 终端版自带 mihomo，并在进程内做限流
 
 限流器把打向家宽的新建连接排队，避免 Claude 把住宅 SOCKS5 打满后出现中途断流。
 

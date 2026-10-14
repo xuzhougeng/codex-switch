@@ -380,6 +380,22 @@ async def main_async(cfg: Config) -> None:
         cfg.dial_interval_ms,
         cfg.queue_wait_s,
     )
+    async def publish_state():
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "limiter-state.json")
+        try:
+            while True:
+                temporary = path + ".tmp"
+                with open(temporary, "w", encoding="utf-8") as output:
+                    json.dump({"active": server.limiter.active, "waiting": server.limiter.waiting}, output)
+                os.replace(temporary, path)
+                await asyncio.sleep(0.5)
+        finally:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+    publisher = asyncio.create_task(publish_state())
     stop = asyncio.Event()
 
     def _stop(*_args: object) -> None:
@@ -395,6 +411,11 @@ async def main_async(cfg: Config) -> None:
         await stop.wait()
         srv.close()
         await srv.wait_closed()
+        publisher.cancel()
+        try:
+            await publisher
+        except asyncio.CancelledError:
+            pass
 
 
 def main() -> None:

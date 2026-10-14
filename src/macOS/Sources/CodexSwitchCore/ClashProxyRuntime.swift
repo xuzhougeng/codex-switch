@@ -1,118 +1,244 @@
 import Foundation
 import Darwin
 
-public struct ClashProxyStatus: Sendable {
-    public let running: Bool
-    public let detail: String
-    public let mihomoPid: Int32?
-    public let limiterPid: Int32?
+public struct ClashProxyStatus: Equatable, Sendable {
+    public var running: Bool
+    public var detail: String
+    public var mihomoPid: Int32?
+    public var limiterPid: Int32?
+    public init(running: Bool = false, detail: String = "未运行", mihomoPid: Int32? = nil, limiterPid: Int32? = nil) {
+        self.running = running; self.detail = detail; self.mihomoPid = mihomoPid; self.limiterPid = limiterPid
+    }
 }
 
 public actor ClashProxyRuntime {
     private let store: ClashProxyStore
-    public init(store: ClashProxyStore) { self.store = store }
+    private let executable: String
+    private let userHome: URL
+    public init(store: ClashProxyStore, executable: String = CommandLine.arguments[0], userHome: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        self.store = store; self.executable = URL(fileURLWithPath: executable).standardizedFileURL.path; self.userHome = userHome
+    }
+    public nonisolated var launchAgentURL: URL {
+        userHome.appendingPathComponent("Library/LaunchAgents/local.codexswitch.proxy.plist")
+    }
+    public var bootEnabled: Bool {
+        guard let data = try? Data(contentsOf: launchAgentURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let args = plist["ProgramArguments"] as? [String] else { return false }
+        return args.contains(store.home.path)
+    }
+    private var launchDomain: String { "gui/\(getuid())" }
+    private var launchLabel: String { launchDomain + "/local.codexswitch.proxy" }
 
+    public func runningSettings() async throws -> ClashProxySettings {
+        if let data = try? Data(contentsOf: store.runtimeSettingsURL), let settings = try? JSONDecoder().decode(ClashProxySettings.self, from: data) { return settings }
+        return try await store.load()
+    }
     public func status() async throws -> ClashProxyStatus {
-        let settings = try await store.load()
-        let limiterPid = Self.readPid(store.limiterPidURL)
-        let mihomoPid = Self.readPid(store.mihomoPidURL)
-        let limiterUp = limiterPid.map(Self.alive) ?? false
-        let mihomoUp = mihomoPid.map(Self.alive) ?? false
-        let port = settings.httpPort
-        let limiterPort = Int(store.limiterListenPort(settings)) ?? 1994
-        if limiterUp && mihomoUp {
-            return ClashProxyStatus(running: true, detail: "运行中  HTTP 127.0.0.1:\(port)  限流 :\(limiterPort)", mihomoPid: mihomoPid, limiterPid: limiterPid)
-        }
-        if limiterUp || mihomoUp {
-            return ClashProxyStatus(running: false, detail: "进程在，端口未就绪。查看 clash 目录下的日志。", mihomoPid: mihomoPid, limiterPid: limiterPid)
-        }
-        return ClashProxyStatus(running: false, detail: "未运行", mihomoPid: nil, limiterPid: nil)
+        let settings = try await runningSettings()
+        let mihomo = await ownedPID(store.mihomoPidURL, marker: store.yamlURL.path)
+        let limiter = await ownedPID(store.limiterPidURL, marker: store.limiterJSONURL.path)
+        let ready = FileManager.default.fileExists(atPath: store.readyURL.path) && mihomo != nil && (!settings.useHomeProxy || limiter != nil) && ProxyProcess.listening(settings.httpPort)
+            && (!settings.useHomeProxy || ProxyProcess.listening((try? LocalEndpoint(settings.limiterListen).port) ?? 1994))
+        return ClashProxyStatus(running: ready, detail: ready ? "运行中 · HTTP 127.0.0.1:\(settings.httpPort)" :
+            (mihomo != nil || limiter != nil ? "启动中或异常，请查看日志" : "未运行"), mihomoPid: mihomo, limiterPid: limiter)
     }
-
+    private func ownedPID(_ url: URL, marker: String) async -> Int32? {
+        guard let pid = ProxyProcess.readPID(url), await ProxyProcess.owns(pid, marker: marker) else { return nil }
+        return pid
+    }
     public func start(_ settings: ClashProxySettings) async throws -> ClashProxyStatus {
-        try await store.save(settings)
-        try await store.materialize(settings)
         if try await status().running { return try await status() }
+        _ = try await MihomoKernel.check(settings, store: store)
+        if settings.useHomeProxy { _ = try ProxyProcess.resolve(settings.pythonPath, names: ["python3"]) }
         try await stop()
-        let python = try Self.resolve(settings.pythonPath, names: ["python3", "python"])
-        let mihomo = try Self.resolve(settings.mihomoPath, names: ["mihomo", "clash"])
-        let limiterPid = try Self.start(python, ["-u", store.limiterPythonURL.path, "-c", store.limiterJSONURL.path],
-                                        cwd: store.workDirectory, log: store.limiterLogURL)
-        try "\(limiterPid)".write(to: store.limiterPidURL, atomically: true, encoding: .utf8)
-        try Self.waitListen("127.0.0.1", Int(store.limiterListenPort(settings)) ?? 1994, "本机限流器")
-        let mihomoPid = try Self.start(mihomo, ["-f", store.yamlURL.path], cwd: store.workDirectory, log: store.mihomoLogURL)
-        try "\(mihomoPid)".write(to: store.mihomoPidURL, atomically: true, encoding: .utf8)
-        try Self.waitListen("127.0.0.1", settings.httpPort, "mihomo")
-        return try await status()
+        try await store.save(settings)
+        _ = try await store.materialize(settings)
+        if bootEnabled {
+            _ = try await ProxyProcess.run("/bin/launchctl", ["bootstrap", launchDomain, launchAgentURL.path])
+        } else {
+            _ = try ProxyProcess.launch(executable, ["--proxy-service", "--home", store.home.path], cwd: store.workDirectory, log: store.serviceLogURL)
+        }
+        do {
+            for _ in 0..<150 {
+                try Task.checkCancellation()
+                if try await status().running { return try await status() }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            throw StoreError("代理启动失败：\n" + ProxyLog.tail(store.serviceLogURL))
+        } catch {
+            try? await stop()
+            throw error
+        }
     }
-
     public func stop() async throws {
-        for url in [store.mihomoPidURL, store.limiterPidURL] {
-            if let pid = Self.readPid(url) { kill(pid, SIGTERM) }
+        // Bootout prevents launchd from respawning the daemon while the user stops it.
+        if bootEnabled, (try? await ProxyProcess.run("/bin/launchctl", ["print", launchLabel], timeout: 3)) != nil {
+            _ = try await ProxyProcess.run("/bin/launchctl", ["bootout", launchLabel], timeout: 5)
+        }
+        for (url, marker) in [(store.servicePidURL, "--proxy-service --home " + store.home.path),
+                              (store.mihomoPidURL, store.yamlURL.path), (store.limiterPidURL, store.limiterJSONURL.path)] {
+            if let pid = await ownedPID(url, marker: marker) {
+                kill(pid, SIGTERM)
+                for _ in 0..<30 {
+                    if kill(pid, 0) != 0 { break }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                if kill(pid, 0) == 0, await ProxyProcess.owns(pid, marker: marker) { kill(pid, SIGKILL) }
+            }
             try? FileManager.default.removeItem(at: url)
         }
+        try? FileManager.default.removeItem(at: store.readyURL)
+        try? FileManager.default.removeItem(at: store.runtimeSettingsURL)
+        try? FileManager.default.removeItem(at: store.limiterStateURL)
     }
-
-    private static func start(_ file: String, _ args: [String], cwd: URL, log: URL) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: file)
-        process.arguments = args
-        process.currentDirectoryURL = cwd
-        FileManager.default.createFile(atPath: log.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: log)
-        process.standardOutput = handle
-        process.standardError = handle
-        try process.run()
-        return process.processIdentifier
+    public func restart(_ settings: ClashProxySettings) async throws -> ClashProxyStatus {
+        // Validate before stopping a working proxy.
+        _ = try await MihomoKernel.check(settings, store: store)
+        try await stop()
+        return try await start(settings)
     }
-
-    private static func waitListen(_ host: String, _ port: Int, _ label: String) throws {
-        let deadline = Date().addingTimeInterval(8)
-        while Date() < deadline {
-            if listening(host, port) { return }
-            Thread.sleep(forTimeInterval: 0.12)
+    public func select(_ settings: ClashProxySettings, name: String, route: ProxyRoute) async throws -> String {
+        let names = DialerProxyBuilder.extractRelayNames(settings.relayYaml)
+        guard names.contains(name), route != .exit || !DialerProxyBuilder.isHongKong(name) else { throw StoreError("不能选择这个节点。") }
+        var updated = settings
+        if route == .relay { updated.selectedRelay = name } else { updated.selectedExit = name }
+        try await store.save(updated)
+        guard try await status().running else { return "已保存，启动后生效。" }
+        let active = try await runningSettings()
+        do {
+            let group = route == .relay ? active.relayGroup : active.exitGroup
+            try await ClashAPI(controller: active.controller).select(group: group, name: name)
+            return "已切换到 \(name)"
+        } catch {
+            throw StoreError("选择已保存，但未切换运行中的服务。请点击重启应用配置。\n" + error.localizedDescription)
         }
-        throw StoreError("\(label) 未能监听 \(host):\(port)。请确认 mihomo / python 已安装。")
     }
-
-    private static func listening(_ host: String, _ port: Int) -> Bool {
-        var hints = addrinfo(ai_flags: AI_NUMERICHOST, ai_family: AF_INET, ai_socktype: SOCK_STREAM, ai_protocol: 0,
-                             ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
-        var info: UnsafeMutablePointer<addrinfo>?
-        defer { if let info { freeaddrinfo(info) } }
-        guard getaddrinfo(host, String(port), &hints, &info) == 0, let addr = info else { return false }
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        defer { close(fd) }
-        var tv = timeval(tv_sec: 0, tv_usec: 200_000)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        return connect(fd, addr.pointee.ai_addr, addr.pointee.ai_addrlen) == 0
+    public static func launchAgentData(executable: String, store: ClashProxyStore) throws -> Data {
+        let plist: [String: Any] = [
+            "Label": "local.codexswitch.proxy", "ProgramArguments": [executable, "--proxy-service", "--home", store.home.path],
+            "RunAtLoad": true, "KeepAlive": true, "ThrottleInterval": 10,
+            "WorkingDirectory": store.workDirectory.path, "StandardOutPath": store.serviceLogURL.path,
+            "StandardErrorPath": store.serviceLogURL.path, "EnvironmentVariables": ["PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"]
+        ]
+        return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
-
-    private static func resolve(_ configured: String, names: [String]) throws -> String {
-        if !configured.trimmingCharacters(in: .whitespaces).isEmpty {
-            let path = (configured as NSString).expandingTildeInPath
-            guard FileManager.default.isExecutableFile(atPath: path) else { throw StoreError("找不到指定的可执行文件：\(path)") }
-            return path
-        }
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for folder in path.split(separator: ":") {
-            for name in names {
-                let candidate = URL(fileURLWithPath: String(folder)).appendingPathComponent(name).path
-                if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
+    public func setBootEnabled(_ enabled: Bool, settings: ClashProxySettings) async throws {
+        if enabled {
+            if FileManager.default.fileExists(atPath: launchAgentURL.path) && !bootEnabled {
+                throw StoreError("已有另一份配置的登录自启动服务，请先关闭它。")
             }
+            _ = try await MihomoKernel.check(settings, store: store)
+            if settings.useHomeProxy { _ = try ProxyProcess.resolve(settings.pythonPath, names: ["python3"]) }
+            try await stop()
+            try await store.save(settings)
+            _ = try await store.materialize(settings)
+            try FileManager.default.createDirectory(at: launchAgentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Self.launchAgentData(executable: executable, store: store).write(to: launchAgentURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: launchAgentURL.path)
+            _ = try await start(settings)
+        } else {
+            try await stop()
+            if bootEnabled { try FileManager.default.removeItem(at: launchAgentURL) }
         }
-        throw StoreError("未在 PATH 中找到 \(names[0])。请安装后重试，或填写绝对路径。")
     }
 
-    private static func readPid(_ url: URL) -> Int32? {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// Headless entry point used both by the app and its login LaunchAgent.
+    public static func serve(home: URL) async -> Int32 {
+        let store = ClashProxyStore(home: home)
+        let fm = FileManager.default
+        var children: [Process] = []
+        var lockFD: Int32 = -1
+        var ownsLock = false
+        var sources: [DispatchSourceSignal] = []
+        let stop = ServiceStop()
+        defer {
+            for source in sources { source.cancel() }
+            if ownsLock {
+                for url in [store.readyURL, store.servicePidURL, store.mihomoPidURL, store.limiterPidURL, store.runtimeSettingsURL, store.limiterStateURL] { try? fm.removeItem(at: url) }
+            }
+            if lockFD >= 0 { close(lockFD) }
+        }
+        do {
+            try fm.createDirectory(at: store.workDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            lockFD = open(store.workDirectory.appendingPathComponent("service.lock").path, O_CREAT | O_RDWR, 0o600)
+            guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw StoreError("代理服务已在运行。") }
+            ownsLock = true
+            for (url, marker) in [(store.mihomoPidURL, store.yamlURL.path), (store.limiterPidURL, store.limiterJSONURL.path)] {
+                if let pid = ProxyProcess.readPID(url), await ProxyProcess.owns(pid, marker: marker) {
+                    kill(pid, SIGTERM)
+                    for _ in 0..<20 {
+                        if kill(pid, 0) != 0 { break }
+                        try await Task.sleep(for: .milliseconds(100))
+                    }
+                    if kill(pid, 0) == 0, await ProxyProcess.owns(pid, marker: marker) { kill(pid, SIGKILL) }
+                }
+            }
+            try? fm.removeItem(at: store.readyURL)
+            for sig in [SIGTERM, SIGINT] {
+                signal(sig, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+                source.setEventHandler { Task { await stop.request() } }
+                source.resume(); sources.append(source)
+            }
+            let settings = try await store.load()
+            let kernel = try MihomoKernel.resolve(settings, store: store)
+            let python = settings.useHomeProxy ? try ProxyProcess.resolve(settings.pythonPath, names: ["python3"]) : ""
+            _ = try await store.materialize(settings)
+            _ = try await ProxyProcess.run(kernel, ["-d", store.workDirectory.path, "-f", store.yamlURL.path, "-t"], cwd: store.workDirectory)
+            for port in [settings.httpPort, settings.socksPort, try LocalEndpoint(settings.controller).port, try LocalEndpoint(settings.limiterListen).port] {
+                guard !ProxyProcess.listening(port) else { throw StoreError("端口 \(port) 已被占用，请停止其他代理或修改端口。") }
+            }
+            try String(getpid()).write(to: store.servicePidURL, atomically: true, encoding: .utf8)
+            let snapshot = try JSONEncoder().encode(settings)
+            try snapshot.write(to: store.runtimeSettingsURL, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: store.runtimeSettingsURL.path)
+            if settings.useHomeProxy {
+            let limiter = try ProxyProcess.launch(python, ["-u", store.limiterPythonURL.path, "-c", store.limiterJSONURL.path], cwd: store.workDirectory, log: store.limiterLogURL)
+            children.append(limiter)
+            try String(limiter.processIdentifier).write(to: store.limiterPidURL, atomically: true, encoding: .utf8)
+            }
+            let mihomo = try ProxyProcess.launch(kernel, ["-d", store.workDirectory.path, "-f", store.yamlURL.path], cwd: store.workDirectory, log: store.mihomoLogURL)
+            children.append(mihomo)
+            try String(mihomo.processIdentifier).write(to: store.mihomoPidURL, atomically: true, encoding: .utf8)
+            let api = ClashAPI(controller: settings.controller)
+            let deadline = Date().addingTimeInterval(12)
+            while true {
+                if await stop.requested { throw CancellationError() }
+                guard children.allSatisfy(\.isRunning), Date() < deadline else { throw StoreError("代理内核或限流器未就绪，请查看日志。") }
+                do {
+                    _ = try await api.group(settings.relayGroup)
+                    if !settings.useHomeProxy || ProxyProcess.listening((try? LocalEndpoint(settings.limiterListen).port) ?? 1994) { break }
+                } catch { }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            let names = DialerProxyBuilder.extractRelayNames(settings.relayYaml)
+            let exits = DialerProxyBuilder.withoutHongKong(names)
+            for (group, name) in [
+                (settings.relayGroup, DialerProxyBuilder.preferred(names, settings.selectedRelay)),
+                (settings.exitGroup, DialerProxyBuilder.preferred(exits.isEmpty ? names : exits, settings.selectedExit, settings.selectedRelay))
+            ] { try await api.select(group: group, name: name) }
+            let limiterPort = try LocalEndpoint(settings.limiterListen).port
+            guard ProxyProcess.listening(settings.httpPort), !settings.useHomeProxy || ProxyProcess.listening(limiterPort) else {
+                throw StoreError("代理入口未就绪。")
+            }
+            try Data().write(to: store.readyURL)
+            print("INFO 代理服务已启动，HTTP 127.0.0.1:\(settings.httpPort)")
+            while !(await stop.requested) {
+                guard children.allSatisfy(\.isRunning) else { throw StoreError("mihomo 或限流进程意外退出。") }
+                try await Task.sleep(for: .milliseconds(300))
+            }
+            for child in children.reversed() { await ProxyProcess.terminate(child) }
+            return 0
+        } catch {
+            for child in children.reversed() { await ProxyProcess.terminate(child) }
+            print("ERROR " + error.localizedDescription)
+            return 1
+        }
     }
-    private static func alive(_ pid: Int32) -> Bool { kill(pid, 0) == 0 }
 }
 
-private extension ClashProxyStore {
-    nonisolated func limiterListenPort(_ settings: ClashProxySettings) -> String {
-        String(settings.limiterListen.split(separator: ":").last ?? "1994")
-    }
+private actor ServiceStop {
+    var requested = false
+    func request() { requested = true }
 }
