@@ -142,18 +142,20 @@ try
     Check(relayAt >= 0 && exitAt > relayAt && hkAt > exitAt, "relay, ai exit, and hong kong are separate groups");
     Check(picked[relayAt..exitAt].Contains("proxies:\n      - two\n      - one\n"), "the node chosen for the home chain is the default relay");
     Check(picked[exitAt..hkAt].Contains("proxies:\n      - one\n      - two\n"), "the exit node is chosen independently of the relay");
-    Check(picked[hkAt..].Contains("proxies:\n      - DIRECT\n"), "a subscription without hong kong still has a direct non-ai exit");
+    var autoAt = picked.IndexOf("name: hk-auto", StringComparison.Ordinal);
+    Check(picked[autoAt..hkAt].Contains("proxies:\n      - exit-group\n") && !picked[autoAt..hkAt].Contains("DIRECT"), "without hong kong development traffic falls back to the selected exit");
     var unset = DialerProxyBuilder.Build(new DialerProxyInput("- name: one\n  type: ss\n- name: two\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "two")).Yaml.Replace("\r\n", "\n");
     var unsetExit = unset.IndexOf("name: exit-group", StringComparison.Ordinal);
     var unsetHk = unset.IndexOf("name: hk-group", StringComparison.Ordinal);
     Check(unsetExit >= 0 && unsetHk > unsetExit && unset[unsetExit..unsetHk].Contains("proxies:\n      - two\n      - one\n"), "an unscreened exit starts on the relay until its own node is saved");
     var mixed = DialerProxyBuilder.Build(new DialerProxyInput("- name: \"🇭🇰 HK1 香港\"\n  type: ss\n- name: \"🇯🇵 JP1 日本\"\n  type: ss\n- name: \"🇺🇸 US1 美国\"\n  type: ss\n", "1.2.3.4", "1080", "", "", SelectedRelay: "🇯🇵 JP1 日本", SelectedExit: "🇭🇰 HK1 香港")).Yaml.Replace("\r\n", "\n");
     var mixedExit = mixed.IndexOf("name: exit-group", StringComparison.Ordinal);
-    var mixedHk = mixed.IndexOf("name: hk-group", StringComparison.Ordinal);
+    var mixedHk = mixed.IndexOf("name: hk-auto", StringComparison.Ordinal);
+    var mixedSelector = mixed.IndexOf("name: hk-group", StringComparison.Ordinal);
     var mixedRules = mixed.IndexOf("\nrules:\n", StringComparison.Ordinal);
     Check(mixedExit >= 0 && mixedHk > mixedExit && mixedRules > mixedHk, "mixed nodes still emit both exit groups");
     Check(mixed[mixedExit..mixedHk].Contains("JP1 日本") && mixed[mixedExit..mixedHk].Contains("US1 美国") && !mixed[mixedExit..mixedHk].Contains("香港"), "ai exit group drops hong kong");
-    Check(mixed[mixedHk..mixedRules].Contains("香港") && mixed[mixedHk..mixedRules].Contains("DIRECT") && !mixed[mixedHk..mixedRules].Contains("JP1"), "non-ai group is hong kong or direct");
+    Check(mixed[mixedHk..mixedSelector].Contains("香港") && mixed[mixedHk..mixedSelector].Contains("exit-group") && !mixed[mixedHk..mixedSelector].Contains("JP1"), "development auto prefers hong kong and falls back to the AI exit");
     Check(!DialerProxyBuilder.IsHongKong("🇯🇵 JP1 日本") && DialerProxyBuilder.IsHongKong("🇭🇰 CN2 香港中继_HY2 ⚡") && DialerProxyBuilder.IsHongKong("relay-hk-01") && !DialerProxyBuilder.IsHongKong("checkpoint"), "hong kong detection uses the label, not a substring");
     var live = DialerProxyBuilder.LiveSelections(new ClashProxySettings { SelectedRelay = "two", SelectedExit = "one", RelayGroup = "r", ExitGroup = "e" });
     Check(live.Count == 2 && live[0].Group == "r" && live[0].Name == "two" && live[1].Group == "e" && live[1].Name == "one", "saved relay and exit are both pushed after start");
@@ -277,6 +279,7 @@ try
     File.WriteAllText(bigLog, "first line is dropped\n" + string.Concat(Enumerable.Repeat("12:00:00 INFO x\n", 100)));
     Check(LogTail.ReadLines(bigLog, 165) is { Count: 10 } tail && tail.All(line => line == "12:00:00 INFO x"), "log tail skips the partial first line");
 
+    await RoutingChecks.Run(root, Check, Reject);
     await SocksLimiterChecks.Run();
     Console.WriteLine("PASS in-process limiter forwards through the first hop and times out the queue");
     await SocksLimiterChecks.Idle();

@@ -6,6 +6,8 @@ public struct ClashProxySettings: Codable, Sendable, Equatable {
     public var subscriptionUrl = ""
     public var selectedRelay = ""
     public var selectedExit = ""
+    public var selectedDevelopment = ""
+    public var routing = RoutingConfiguration()
     public var exitGroup = "exit-group"
     public var httpPort = 1990
     public var socksPort = 1991
@@ -27,13 +29,15 @@ public struct ClashProxySettings: Codable, Sendable, Equatable {
     public var pythonPath = ""
     public init() {}
 
-    private enum CodingKeys: String, CodingKey { case socksProfiles, selectedSocksProfileID, proxyOtherSites, useHomeProxy, subscriptionUrl, selectedRelay, selectedExit, exitGroup, httpPort, socksPort, controller, limiterListen, relayGroup, targetName, relayYaml, homeServer, homePort, homeUsername, homePassword, maxConcurrent, dialIntervalMs, queueWaitS, mihomoPath, pythonPath }
+    private enum CodingKeys: String, CodingKey { case routing, selectedDevelopment, socksProfiles, selectedSocksProfileID, proxyOtherSites, useHomeProxy, subscriptionUrl, selectedRelay, selectedExit, exitGroup, httpPort, socksPort, controller, limiterListen, relayGroup, targetName, relayYaml, homeServer, homePort, homeUsername, homePassword, maxConcurrent, dialIntervalMs, queueWaitS, mihomoPath, pythonPath }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         subscriptionUrl = try values.decodeIfPresent(String.self, forKey: .subscriptionUrl) ?? subscriptionUrl
         selectedRelay = try values.decodeIfPresent(String.self, forKey: .selectedRelay) ?? selectedRelay
         selectedExit = try values.decodeIfPresent(String.self, forKey: .selectedExit) ?? selectedExit
+        selectedDevelopment = try values.decodeIfPresent(String.self, forKey: .selectedDevelopment) ?? selectedDevelopment
+        routing = try values.decodeIfPresent(RoutingConfiguration.self, forKey: .routing) ?? routing
         exitGroup = try values.decodeIfPresent(String.self, forKey: .exitGroup) ?? exitGroup
         httpPort = try values.decodeIfPresent(Int.self, forKey: .httpPort) ?? httpPort
         socksPort = try values.decodeIfPresent(Int.self, forKey: .socksPort) ?? socksPort
@@ -119,6 +123,12 @@ public actor ClashProxyStore {
                          relayGroup: settings.relayGroup, targetName: settings.targetName, httpPort: settings.httpPort,
                          socksPort: settings.socksPort, controller: settings.controller, limiterListen: settings.limiterListen,
                          maxConcurrent: settings.maxConcurrent, dialIntervalMs: settings.dialIntervalMs, queueWaitS: settings.queueWaitS, selectedRelay: settings.selectedRelay,
-                         exitGroup: settings.exitGroup, selectedExit: settings.selectedExit, useHomeProxy: settings.useHomeProxy, proxyOtherSites: settings.proxyOtherSites)
+                         exitGroup: settings.exitGroup, selectedExit: settings.selectedExit, useHomeProxy: settings.useHomeProxy,
+                         proxyOtherSites: settings.proxyOtherSites, routing: settings.routing, selectedDevelopment: settings.selectedDevelopment)
+    }
+
+    public func saveRunningSettings(_ settings: ClashProxySettings) throws {
+        try JSONEncoder().encode(settings).write(to: runtimeSettingsURL, options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: runtimeSettingsURL.path)
     }
 }

@@ -15,11 +15,12 @@ static class Program
                 "status" => Cli.Status(),
                 "logs" => Cli.Logs(),
                 "shell" => Cli.Shell(),
+                "rules" => await Cli.Rules(args.Skip(1).ToArray()),
                 "serve" => await MihomoDaemon.RunAsync(args),
                 _ => Cli.Usage()
             };
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or HttpRequestException or TaskCanceledException or System.Text.Json.JsonException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(ex.Message);
             return 1;
@@ -29,6 +30,41 @@ static class Program
 
 static class Cli
 {
+    public static async Task<int> Rules(string[] args)
+    {
+        var local = new LocalService();
+        var settings = local.Load();
+        if (args.Length == 0 || args is ["show"])
+        {
+            Console.Write(RoutingWorkflow.Preview(settings));
+            return 0;
+        }
+        if (args is ["check"])
+        {
+            Console.WriteLine(await RoutingWorkflow.CheckAsync(local.Store, settings)); return 0;
+        }
+        if (args is ["apply"])
+        {
+            Console.WriteLine(await RoutingWorkflow.ApplyAsync(local.Store, local.Service.Status().Running, settings)); return 0;
+        }
+        if (args is ["import", var path])
+        {
+            if (new FileInfo(path).Length > 2_000_000) throw new InvalidOperationException("规则文件超过 2 MB。");
+            var rules = CodexSwitch.Core.RoutingRule.ImportClash(File.ReadAllText(path), CodexSwitch.Core.ClashProxyStore.ToInput(settings));
+            settings.Routing.CustomRules.AddRange(rules);
+            settings.Routing.Validate(settings.HomeEnabled);
+            local.Store.Save(settings);
+            Console.WriteLine($"已保存 {rules.Count} 条规则；运行中使用 rules apply 应用。"); return 0;
+        }
+        if (args is ["preset", var name])
+        {
+            CodexSwitch.Core.RoutingConfiguration.ApplyPreset(settings, name switch { "ai-only" => "aiOnly", "all-proxy" => "allProxy", _ => name });
+            local.Store.Save(settings);
+            Console.WriteLine("方案已保存；运行中使用 rules apply 应用。"); return 0;
+        }
+        Console.Error.WriteLine("codex-switch rules [show|check|apply|import FILE|preset smart|ai-only|all-proxy]");
+        return 1;
+    }
     public static int Start()
     {
         var local = new LocalService();
@@ -94,6 +130,7 @@ static class Cli
         Console.WriteLine("codex-switch status");
         Console.WriteLine("codex-switch logs");
         Console.WriteLine("codex-switch shell     写入 claude 和 codex 的代理函数");
+        Console.WriteLine("codex-switch rules     预览 / 检查 / 应用 / 导入分流规则");
         return 1;
     }
 

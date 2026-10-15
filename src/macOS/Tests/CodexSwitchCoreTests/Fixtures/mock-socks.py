@@ -64,14 +64,36 @@ async def handle(reader, writer, home):
     finally:
         writer.close()
 
+async def web(reader, writer):
+    """Serve fake GitHub responses through SOCKS without any external connections."""
+    try:
+        version, count = await reader.readexactly(2)
+        methods = await reader.readexactly(count)
+        assert version == 5 and 0 in methods
+        writer.write(b'\x05\x00')
+        await writer.drain()
+        host, port = await destination(reader)
+        assert host in ('github.com', 'github.githubassets.com') and port == 80
+        writer.write(OK)
+        await writer.drain()
+        await reader.readuntil(b'\r\n\r\n')
+        writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nmock github')
+        await writer.drain()
+    except (asyncio.IncompleteReadError, ConnectionError):
+        pass
+    finally:
+        writer.close()
+
 async def main():
     global HOME_PORT
     home = await asyncio.start_server(lambda r, w: handle(r, w, True), '127.0.0.1', 0)
     HOME_PORT = home.sockets[0].getsockname()[1]
     relay = await asyncio.start_server(lambda r, w: handle(r, w, False), '127.0.0.1', 0)
+    github = await asyncio.start_server(web, '127.0.0.1', 0)
     with open(sys.argv[1], 'w') as output:
-        json.dump({'home': HOME_PORT, 'relay': relay.sockets[0].getsockname()[1]}, output)
-    async with home, relay:
-        await asyncio.gather(home.serve_forever(), relay.serve_forever())
+        json.dump({'home': HOME_PORT, 'relay': relay.sockets[0].getsockname()[1],
+                   'web': github.sockets[0].getsockname()[1]}, output)
+    async with home, relay, github:
+        await asyncio.gather(home.serve_forever(), relay.serve_forever(), github.serve_forever())
 
 asyncio.run(main())

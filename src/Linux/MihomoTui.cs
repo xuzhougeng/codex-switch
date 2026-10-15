@@ -8,7 +8,7 @@ using Spectre.Console;
 
 namespace CodexSwitch.Linux;
 
-sealed class MihomoTui
+sealed partial class MihomoTui
 {
     private readonly LocalService local = new();
     private (string Path, DateTime Stamp, string Line)? versionCache;
@@ -28,14 +28,14 @@ sealed class MihomoTui
             Render(settings, status);
             var menu = new List<(string Label, string Hint)>();
             if (status.Running) menu.AddRange([("重启", "应用改过的配置"), ("停止", "")]);
-            else menu.Add(("启动", "后台运行 mihomo 和限流"));
-            menu.AddRange([("节点", "填写 · 刷新订阅"), ("切换第一跳", "自动测速 · 手动指定"), ("第一代理", "其他 AI · 不含香港"), ("家宽 SOCKS5", "出口主机与账号"), ("端口与限流", "端口 · 并发 · 间隔")]);
+            else menu.Add(("启动", "后台运行代理"));
+            menu.AddRange([("订阅节点", "填写 · 刷新订阅"), ("出口节点", "AI · GitHub / 开发 · 家宽中转"), ("分流规则", "预设方案 · 自定义 Clash 规则"), ("家宽 SOCKS5", "可选 · 启用 / 停用 · 出口配置"), ("端口与限流", "端口 · 并发 · 间隔")]);
             if (status.Running) menu.Add(("运行详情", "进程与当前连接"));
             menu.AddRange([("日志", "服务 · 限流 · mihomo"), ("内核", "版本 · 在线更新 · 检查配置"), ("Shell 命令", "写入 claude / codex 代理函数"),
                 ("开机启动", "systemd 用户服务"), ("退出", "")]);
             var labels = menu.Select(item => Markup.Escape(item.Label)
                 + new string(' ', Math.Max(0, 14 - item.Label.GetCellWidth())) + "[grey62]" + item.Hint + "[/]").ToList();
-            var index = Pick(labels, pageSize: labels.Count, wrap: true, back: false);
+            var index = Pick(labels, pageSize: Math.Min(labels.Count, Math.Max(5, Console.WindowHeight - 21)), wrap: true, back: false);
             if (index < 0) continue;
             var choice = menu[index].Label;
             if (choice == "退出") return 0;
@@ -46,8 +46,10 @@ sealed class MihomoTui
                     case "启动": Start(settings, status); break;
                     case "停止": local.Stop(); Pause("已停止"); break;
                     case "重启": Pause(local.Restart(settings).Detail); break;
-                    case "节点": await Nodes(settings); break;
-                    case "家宽 SOCKS5": Home(settings); break;
+                    case "订阅节点": await Nodes(settings); break;
+                    case "出口节点": await OutboundNodes(settings); break;
+                    case "分流规则": await Rules(settings); break;
+                    case "家宽 SOCKS5": ManageHome(settings); break;
                     case "端口与限流": Ports(settings); break;
                     case "切换第一跳": await SwitchRelay(settings); break;
                     case "第一代理": await SwitchExit(settings); break;
@@ -71,6 +73,7 @@ sealed class MihomoTui
 
     public static string Chain(ClashProxySettings settings)
     {
+        if (!settings.HomeEnabled) return "AI → http://127.0.0.1:" + settings.HttpPort + " → 单跳出口（家宽未启用）";
         var home = string.IsNullOrWhiteSpace(settings.HomeServer) ? "家宽未填写" : settings.HomeServer + ":" + settings.HomePort;
         return "Claude → http://127.0.0.1:" + settings.HttpPort
             + " → 限流 " + settings.LimiterListen
@@ -87,7 +90,7 @@ sealed class MihomoTui
         var exitChosen = ai.Contains(settings.SelectedExit);
         var exit = names.Count == 0 ? "" : DialerProxyBuilder.Preferred(ai.Count > 0 ? ai : names, settings.SelectedExit, settings.SelectedRelay);
         var boot = !SystemdUnit.Available() ? "无 systemd" : SystemdUnit.IsEnabled() ? "[green]开[/]" : "关";
-        var pace = ReadPace(status);
+        var pace = settings.HomeEnabled ? ReadPace(status) : null;
         var grid = new Grid()
             .AddColumn(new GridColumn().NoWrap().PadRight(3))
             .AddColumn(new GridColumn().NoWrap().PadRight(3))
@@ -106,9 +109,11 @@ sealed class MihomoTui
             : "[bold default]" + Markup.Escape(Plain(current)) + "[/] · 订阅 " + names.Count + " 个");
         Row("AI", names.Count == 0 ? "[yellow]先填订阅[/]" : "[bold default]" + Markup.Escape(Plain(exit)) + "[/]",
             exitChosen ? "单跳 · 不含香港" : "未指定 · 单跳 · 不含香港");
+        Row("开发", string.IsNullOrWhiteSpace(settings.SelectedDevelopment) ? "[green]自动回退[/]" : Markup.Escape(Plain(settings.SelectedDevelopment)), "GitHub / Docker · 香港优先");
+        Row("方案", RoutingConfiguration.PresetTitle(settings.Routing.Preset(settings.ProxyOtherSites)), "自定义规则 " + settings.Routing.CustomRules.Count(r => r.Enabled) + " 条启用");
         Row("家宽", string.IsNullOrWhiteSpace(settings.HomeServer)
             ? "[yellow]未填写[/]"
-            : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), "Anthropic 的第二跳");
+            : Markup.Escape(settings.HomeServer + ":" + settings.HomePort), settings.HomeEnabled ? "已启用 · Anthropic 第二跳" : "未启用 · Claude 使用 AI 出口");
         grid.AddEmptyRow();
         try
         {
@@ -188,10 +193,11 @@ sealed class MihomoTui
         var names = DialerProxyBuilder.ExtractRelayNames(settings.RelayYaml);
         if (!names.Contains(settings.SelectedRelay)) settings.SelectedRelay = names[0];
         if (!names.Contains(settings.SelectedExit)) settings.SelectedExit = "";
+        if (!names.Contains(settings.SelectedDevelopment)) settings.SelectedDevelopment = "";
         local.Store.Save(settings);
-        if (string.IsNullOrWhiteSpace(settings.HomeServer))
+        if (!settings.HomeEnabled)
         {
-            Pause("订阅已保存，共 " + names.Count + " 个节点。填好家宽后，在「切换第一跳」里自动测速。");
+            Pause("订阅已保存，共 " + names.Count + " 个节点。可在「出口节点」选择 AI 与开发出口；家宽为可选功能。");
             return;
         }
         await ProbeAndSelect(settings);
@@ -318,7 +324,7 @@ sealed class MihomoTui
             AnsiConsole.MarkupLine("当前 [bold]{0}[/]", Markup.Escape(current));
             AnsiConsole.MarkupLine("[grey62]OpenAI、Gemini、xAI、Cursor、Copilot 和 Claude 更新。不进家宽，不含香港[/]");
             string Row(string label, string hint) => Markup.Escape(label) + new string(' ', Math.Max(1, 8 - label.GetCellWidth())) + "[grey62]" + hint + "[/]";
-            var index = Pick(new[] { Row("自动", "测到更新地址，跳过香港"), Row("手动", "从非香港节点指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]第一代理[/]");
+            var index = Pick(new[] { Row("自动", "测到更新地址，跳过香港"), Row("手动", "从非香港节点指定，t 测当前，a 测全部"), "返回" }, title: "[grey62]AI 出口[/]");
             if (index < 0 || actions[index] == "返回") return;
             if (actions[index] == "自动") await ProbeAndSelectExit(settings);
             else await ChooseExit(settings);
@@ -424,6 +430,7 @@ sealed class MihomoTui
             Markup.Escape(settings.HomeServer),
             Markup.Escape(settings.HomePort),
             Markup.Escape(userShown));
+        settings.UseHomeProxy = true;
         Save(settings);
     }
 

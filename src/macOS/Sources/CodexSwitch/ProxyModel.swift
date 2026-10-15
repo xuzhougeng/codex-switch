@@ -22,6 +22,14 @@ final class ProxyModel: ObservableObject {
     var connections: ProxyConnections? { snapshot.connections }
     var liveRelay: String { snapshot.liveRelay }
     var liveExit: String { snapshot.liveExit }
+    var liveDevelopment: String {
+        let selected = snapshot.liveDevelopment == DialerProxyBuilder.developmentAutomaticGroup ? snapshot.automaticDevelopment : snapshot.liveDevelopment
+        return selected == settings.exitGroup ? snapshot.liveExit : selected
+    }
+    var rulesNeedApply: Bool {
+        state.running && (settings.routing != snapshot.routing || settings.proxyOtherSites != snapshot.proxyOtherSites
+                          || snapshot.automaticDevelopment.isEmpty)
+    }
     var pace: String { snapshot.pace }
     @Published var logSource = "mihomo"
     @Published var problemsOnly = false
@@ -99,8 +107,26 @@ final class ProxyModel: ObservableObject {
             if visibleNodes != nodes { visibleNodes = nodes }
         }
     }
-    var selection: String { route == .relay ? settings.selectedRelay : settings.selectedExit }
-    var liveSelection: String { route == .relay ? liveRelay : liveExit }
+    var selection: String {
+        switch route { case .relay: return settings.selectedRelay; case .exit: return settings.selectedExit; case .development: return settings.selectedDevelopment }
+    }
+    var liveSelection: String {
+        switch route { case .relay: return liveRelay; case .exit: return liveExit; case .development: return liveDevelopment }
+    }
+    func applyPreset(_ preset: RoutingPreset) {
+        var routing = settings.routing, otherSites = settings.proxyOtherSites
+        routing.apply(preset, proxyOtherSites: &otherSites)
+        settings.routing = routing; settings.proxyOtherSites = otherSites
+        message = "已选择「\(preset.title)」，点击保存并应用后生效。"
+    }
+    func saveRules(apply: Bool) {
+        run { [self] in
+            try settings.routing.validate(useHomeProxy: settings.useHomeProxy)
+            if apply { return try await runtime.applyRules(settings) }
+            try await store.save(settings)
+            return state.running ? "规则已保存，点击应用使其生效。" : "规则已保存，启动代理后生效。"
+        }
+    }
     var logURL: URL {
         switch logSource { case "服务": return store.serviceLogURL; case "限流": return store.limiterLogURL; default: return store.mihomoLogURL }
     }
@@ -221,11 +247,16 @@ final class ProxyModel: ObservableObject {
     private func normalizeSelections() {
         settings.selectedRelay = DialerProxyBuilder.preferred(names, settings.selectedRelay)
         settings.selectedExit = DialerProxyBuilder.preferred(catalog.exitNames, settings.selectedExit, settings.selectedRelay)
+        if !names.contains(settings.selectedDevelopment) { settings.selectedDevelopment = "" }
     }
     func select(_ name: String, route: ProxyRoute? = nil) {
         let route = route ?? self.route
         run { [self] in
-            if route == .relay { settings.selectedRelay = name } else { settings.selectedExit = name }
+            switch route {
+            case .relay: settings.selectedRelay = name
+            case .exit: settings.selectedExit = name
+            case .development: settings.selectedDevelopment = name == DialerProxyBuilder.developmentAutomaticGroup ? "" : name
+            }
             return try await runtime.select(settings, name: name, route: route)
         }
     }
@@ -246,7 +277,11 @@ final class ProxyModel: ObservableObject {
             }
             guard selectFastest else { return "测速完成。点击节点可切换。" }
             guard let best = results.filter({ $0.value >= 0 }).min(by: { $0.value < $1.value }) else { throw StoreError("没有节点在 5 秒内走通。请检查订阅" + (route == .relay ? "和家宽配置。" : "。")) }
-            if route == .relay { settings.selectedRelay = best.key } else { settings.selectedExit = best.key }
+            switch route {
+            case .relay: settings.selectedRelay = best.key
+            case .exit: settings.selectedExit = best.key
+            case .development: settings.selectedDevelopment = best.key
+            }
             let result = try await runtime.select(settings, name: best.key, route: route)
             return "最快 \(best.value) ms · " + result
         }

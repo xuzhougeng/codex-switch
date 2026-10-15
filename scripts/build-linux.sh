@@ -17,6 +17,16 @@ if [[ ! -f "$kernel" ]]; then
   bash "$root/scripts/fetch-mihomo.sh"
 fi
 if [[ "${SKIP_TESTS:-}" != 1 ]]; then
+  if [[ -z "${CODEX_SWITCH_TEST_KERNEL:-}" && "$(uname -s)" == Linux ]]; then
+    case "$(uname -m)" in
+      x86_64) test_arch=x64 ;;
+      aarch64|arm64) test_arch=arm64 ;;
+      *) test_arch= ;;
+    esac
+    if [[ -n "$test_arch" && -f "$root/src/Linux/kernel/linux-$test_arch/mihomo" ]]; then
+      export CODEX_SWITCH_TEST_KERNEL="$root/src/Linux/kernel/linux-$test_arch/mihomo"
+    fi
+  fi
   "$dotnet" run --project "$root/tests/Core.Tests/Core.Tests.csproj" -c Release
 fi
 "$dotnet" publish "$root/src/Linux/CodexSwitch.Linux.csproj" -c Release -r "$rid" --self-contained true \

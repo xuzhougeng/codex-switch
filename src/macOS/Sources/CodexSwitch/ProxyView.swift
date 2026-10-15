@@ -11,9 +11,9 @@ struct ProxyView: View {
     @State private var yaml = ""
     @State private var showSubscription = false
     private enum Tab: String, CaseIterable {
-        case nodes = "节点", settings = "设置", activity = "连接", logs = "日志"
+        case nodes = "出口节点", rules = "分流规则", settings = "设置", activity = "连接", logs = "日志"
         var icon: String {
-            switch self { case .nodes: return "square.grid.2x2"; case .settings: return "slider.horizontal.3"
+            switch self { case .nodes: return "square.grid.2x2"; case .rules: return "arrow.triangle.branch"; case .settings: return "slider.horizontal.3"
             case .activity: return "waveform.path"; case .logs: return "terminal" }
         }
     }
@@ -21,11 +21,12 @@ struct ProxyView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            dashboard
+            if tab == .rules { compactStatus } else { dashboard }
             pageTabs
             Group {
                 switch tab {
                 case .nodes: nodes
+                case .rules: ProxyRulesView(model: model, chooseNodes: { route in model.route = route; tab = .nodes }, configureHome: { tab = .settings })
                 case .settings: settings
                 case .activity: activity
                 case .logs: logs
@@ -128,6 +129,18 @@ struct ProxyView: View {
             .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(SwitchPalette.border.opacity(0.5)) }
             .disabled(model.busy)
     }
+    private var compactStatus: some View {
+        HStack(spacing: 10) {
+            Circle().fill(model.state.running ? accent : SwitchPalette.muted).frame(width: 7, height: 7)
+            Text(model.state.running ? "代理运行中" : "代理未启动").font(.system(size: 12, weight: .semibold))
+            Text(model.systemProxy ? "系统代理已开启" : "系统代理未开启").font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+            Spacer(minLength: 6)
+            Text("\(model.names.count) 个订阅节点").font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+            Button(model.state.running ? "停止代理" : "启动代理") { model.state.running ? model.stop() : model.start() }
+                .buttonStyle(SwitchButtonStyle(compact: true)).disabled(model.busy || (!model.state.running && model.names.isEmpty))
+        }.padding(14).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 11))
+            .overlay { RoundedRectangle(cornerRadius: 11).strokeBorder(SwitchPalette.border) }
+    }
     private func metric(_ title: String, value: String, icon: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(title, systemImage: icon).font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
@@ -169,21 +182,31 @@ struct ProxyView: View {
                 }
             }.padding(16).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                 .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SwitchPalette.border) }.disabled(model.busy)
+            routeCards
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("代理节点").font(.system(size: 15, weight: .semibold))
+                    Text(routeTitle(model.route) + "节点").font(.system(size: 15, weight: .semibold))
                     Text("\(model.visibleNodes.count)").font(.system(size: 11, design: .rounded)).foregroundStyle(SwitchPalette.muted)
                     Spacer()
                     Button { model.probe() } label: { Label("测全部", systemImage: "speedometer") }
                         .buttonStyle(SwitchButtonStyle(kind: .quiet, compact: true)).disabled(model.busy || model.candidates.isEmpty)
-                    Button("自动选最快") { model.probe(selectFastest: true) }
+                    Button("测速并选最快") { model.probe(selectFastest: true) }
                         .buttonStyle(SwitchButtonStyle(compact: true)).disabled(model.busy || model.candidates.isEmpty)
                 }
-                if model.settings.useHomeProxy || !model.settings.socksProfiles.isEmpty {
-                    Picker("选择用途", selection: $model.route) {
-                        Text("第一代理 · 其他 AI").tag(ProxyRoute.exit)
-                        Text("第一跳 · 家宽中转").tag(ProxyRoute.relay)
-                    }.pickerStyle(.segmented).labelsHidden()
+                if model.route == .development {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.triangle.branch").foregroundStyle(accent)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("自动回退").font(.system(size: 12, weight: .semibold))
+                            Text("优先可用香港节点，全部失效时使用 AI 出口。手动选择节点后固定使用该节点。")
+                                .font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+                        }
+                        Spacer(minLength: 6)
+                        Button(model.settings.selectedDevelopment.isEmpty ? "自动已选" : "使用自动") {
+                            model.select(DialerProxyBuilder.developmentAutomaticGroup, route: .development)
+                        }.buttonStyle(SwitchButtonStyle(kind: model.settings.selectedDevelopment.isEmpty ? .quiet : .secondary, compact: true))
+                            .disabled(model.busy || (model.settings.selectedDevelopment.isEmpty && !model.rulesNeedApply))
+                    }.padding(12).background(SwitchPalette.selected, in: RoundedRectangle(cornerRadius: 9))
                 }
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").foregroundStyle(SwitchPalette.muted)
@@ -204,17 +227,68 @@ struct ProxyView: View {
                                   running: model.state.running, busy: model.busy, model: model)
                         .equatable()
                 }
-                Label(model.route == .relay ? "测速包含中转与家宽的完整链路" : "此列表用于 AI 代理，已排除香港节点", systemImage: "info.circle")
+                Label(model.route == .relay ? "测速包含中转与家宽的完整链路" : model.route == .development ? "用 GitHub 测试连接，支持香港与其他地区节点" : "AI 出口已排除香港节点", systemImage: "info.circle")
                     .font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
             }.padding(18).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 12))
                 .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SwitchPalette.border) }
         }
     }
+    private var routeCards: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("按用途选择出口").font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Button { tab = .rules } label: { Label("管理分流规则", systemImage: "arrow.triangle.branch") }
+                    .buttonStyle(SwitchButtonStyle(kind: .quiet, compact: true))
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 140), spacing: 10), count: 3), spacing: 10) {
+                ForEach(ProxyRoute.allCases, id: \.self) { route in
+                    Button {
+                        if route == .relay && model.settings.socksProfiles.isEmpty { tab = .settings }
+                        else { model.route = route }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Image(systemName: route == .exit ? "sparkles" : route == .development ? "chevron.left.forwardslash.chevron.right" : "house")
+                                Text(routeTitle(route)).font(.system(size: 12, weight: .semibold))
+                                Spacer(minLength: 0)
+                                if model.route == route { Image(systemName: "checkmark.circle.fill") }
+                            }.foregroundStyle(accent)
+                            Text(routeNode(route)).font(.system(size: 11, weight: .medium)).lineLimit(1).truncationMode(.middle).foregroundStyle(.primary)
+                            Text(route == .exit ? "单跳 · 非香港节点" : route == .development
+                                 ? (model.settings.selectedDevelopment.isEmpty ? "自动回退 · 香港优先" : "手动指定节点")
+                                 : model.settings.useHomeProxy ? "中转 → 家宽 SOCKS5" : "可选 · 配置后启用")
+                                .font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+                        }.padding(14).frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
+                            .background(model.route == route ? SwitchPalette.selected : SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 11))
+                            .overlay { RoundedRectangle(cornerRadius: 11).strokeBorder(model.route == route ? accent.opacity(0.35) : SwitchPalette.border) }
+                            .contentShape(RoundedRectangle(cornerRadius: 11))
+                    }.buttonStyle(.plain).disabled(model.busy).accessibilityAddTraits(model.route == route ? .isSelected : [])
+                }
+            }
+        }
+    }
+    private func routeTitle(_ route: ProxyRoute) -> String {
+        switch route { case .exit: return "AI 工具"; case .development: return "GitHub / 开发"; case .relay: return "家宽中转" }
+    }
+    private func routeNode(_ route: ProxyRoute) -> String {
+        let name: String
+        switch route {
+        case .exit: name = model.state.running ? model.liveExit : model.settings.selectedExit
+        case .development: name = model.state.running ? model.liveDevelopment : model.settings.selectedDevelopment
+        case .relay: name = model.state.running ? model.liveRelay : model.settings.selectedRelay
+        }
+        return name.isEmpty ? (route == .development ? "自动选择可用出口" : route == .relay ? "选择中转与家宽" : "选择一个节点") : name
+    }
     private var settings: some View {
         VStack(alignment: .leading, spacing: 18) {
-            card("代理范围") {
-                Toggle("其他网站也使用代理节点", isOn: $model.settings.proxyOtherSites)
-                Text("AI 网站使用所选节点；GitHub / Docker 使用香港节点或直连。关闭此项后，其余网站默认直连。修改后保存并重启生效。")
+            card("分流方案") {
+                HStack {
+                    Text(model.settings.routing.preset(proxyOtherSites: model.settings.proxyOtherSites)?.title ?? "自定义方案")
+                    Spacer()
+                    Button("管理分流规则") { tab = .rules }
+                }
+                Text("AI 工具、开发网站、家宽中转与自定义规则统一在分流规则中管理。")
                     .font(.caption).foregroundStyle(.secondary)
             }.disabled(model.busy)
             SocksProxySection(model: model) { model.route = .relay; tab = .nodes }
@@ -340,7 +414,7 @@ struct ProxyView: View {
     }
     private func card<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         let icon: String = {
-            switch title { case "代理范围": return "globe"; case "家宽双跳（可选）": return "point.3.connected.trianglepath.dotted"
+            switch title { case "分流方案": return "arrow.triangle.branch"; case "家宽双跳（可选）": return "point.3.connected.trianglepath.dotted"
             case "内核": return "cpu"; case "高级设置": return "slider.horizontal.3"; default: return "waveform.path" }
         }()
         return VStack(alignment: .leading, spacing: 16) {

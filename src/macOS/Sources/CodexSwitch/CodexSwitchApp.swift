@@ -326,6 +326,7 @@ struct ContentView: View {
             Text("登录新账号会通过 Codex CLI 打开浏览器。成功后自动保存；取消或超时会保留原账号。")
             Text("切换会先保存并备份当前登录。使用 Command-Q 完全退出 Codex 后重新打开，以加载新的登录。")
             Text("代理页可直接管理 mihomo。先下载内核、导入订阅，再启动并开启系统代理。家宽双跳可在设置里启用。")
+            Text("出口节点按 AI 工具、GitHub / 开发、家宽中转分别选择。分流规则提供三种预设，支持自定义规则和 Clash 规则列表导入；自定义规则从上到下优先匹配。保存并应用后立即生效，端口与家宽配置变更需要重启代理。")
             Text("本工具管理文件登录，不会自动改写 macOS 钥匙串。使用系统凭据存储时，需要先确认 Codex 配置为文件存储。")
             Text("本地快照和备份包含登录凭据，请勿分享或上传。额度尚未核验，本地会话记录不作为实时额度展示。")
             Text(model.store.directory.path).font(.caption.monospaced()).textSelection(.enabled).foregroundStyle(.secondary)

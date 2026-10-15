@@ -55,7 +55,7 @@ final class ProxyTests: XCTestCase {
         XCTAssertFalse(files.yaml.contains("name: target-socks5"))
         XCTAssertTrue(files.yaml.contains("DOMAIN-SUFFIX,anthropic.com,exit-group"))
         XCTAssertTrue(files.yaml.contains("MATCH,exit-group"))
-        let exit = files.yaml.components(separatedBy: "  - name: exit-group")[1].components(separatedBy: "  - name: hk-group")[0]
+        let exit = files.yaml.components(separatedBy: "  - name: exit-group")[1].components(separatedBy: "  - name: hk-auto")[0]
         XCTAssertFalse(exit.contains("HK 01"))
         XCTAssertTrue(exit.contains("proxies:\n      - Japan"))
         XCTAssertTrue(files.yaml.contains("  - name: 'HK 01'\n    type: socks5"))
@@ -71,6 +71,40 @@ final class ProxyTests: XCTestCase {
         let exit = try DialerProxyBuilder.buildProbe(input, controller: "127.0.0.1:30000", chain: false)
         XCTAssertFalse(exit.contains("home.example"))
         XCTAssertFalse(exit.contains("000123"))
+    }
+    func testGitHubAutomaticallyFallsBackFromHongKongToSelectedExit() throws {
+        for proxyOtherSites in [false, true] {
+            let input = DialerProxyInput(relayYaml: yaml, homeServer: "home.example", homePort: "1080",
+                                        selectedExit: "Japan", proxyOtherSites: proxyOtherSites)
+            let text = try DialerProxyBuilder.build(input).yaml
+            let group = text.components(separatedBy: "  - name: hk-auto\n")[1].components(separatedBy: "  - name: hk-group\n")[0]
+            XCTAssertTrue(group.contains("type: fallback\n"))
+            XCTAssertTrue(group.contains("url: https://github.com\n"))
+            XCTAssertTrue(group.contains("interval: 300\n"))
+            XCTAssertTrue(group.contains("max-failed-times: 1\n"))
+            XCTAssertTrue(group.contains("proxies:\n      - \"HK 01\"\n      - exit-group\n"))
+            XCTAssertFalse(group.contains("DIRECT"))
+            for host in ["github.com", "githubusercontent.com", "githubassets.com", "github.io"] {
+                XCTAssertTrue(text.contains("DOMAIN-SUFFIX,\(host),hk-group\n"))
+            }
+            let copilot = try XCTUnwrap(text.range(of: "DOMAIN,copilot-proxy.githubusercontent.com,exit-group"))
+            let github = try XCTUnwrap(text.range(of: "DOMAIN-SUFFIX,githubusercontent.com,hk-group"))
+            XCTAssertLessThan(copilot.lowerBound, github.lowerBound)
+            XCTAssertTrue(text.contains("DOMAIN-SUFFIX,anthropic.com,target-socks5\n"))
+        }
+    }
+    func testGitHubWithoutHongKongUsesSelectedExitInBothRoutingModes() throws {
+        for proxyOtherSites in [false, true] {
+            let input = DialerProxyInput(relayYaml: "- {name: Japan, type: socks5, server: 127.0.0.1, port: 29003}",
+                                        homeServer: "", homePort: "", exitGroup: "custom-exit", selectedExit: "Japan",
+                                        useHomeProxy: false, proxyOtherSites: proxyOtherSites)
+            let text = try DialerProxyBuilder.build(input).yaml
+            let group = text.components(separatedBy: "  - name: hk-auto\n")[1].components(separatedBy: "  - name: hk-group\n")[0]
+            XCTAssertTrue(group.contains("proxies:\n      - custom-exit\n"))
+            XCTAssertFalse(group.contains("DIRECT"))
+            XCTAssertTrue(text.contains("DOMAIN-SUFFIX,githubassets.com,hk-group\n"))
+            XCTAssertTrue(text.contains("MATCH,\(proxyOtherSites ? "custom-exit" : "DIRECT")\n"))
+        }
     }
     func testValidationAndHongKongFilter() throws {
         var input = DialerProxyInput(relayYaml: yaml, homeServer: "home.example", homePort: "1080")

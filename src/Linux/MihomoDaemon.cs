@@ -34,10 +34,10 @@ static class MihomoDaemon
             service.Prepare(settings);
             WritePid(store.ServicePidPath, Environment.ProcessId);
             var json = await File.ReadAllTextAsync(store.LimiterJsonPath);
-            var config = SocksLimiterConfig.Parse(json);
-            await using var limiter = new SocksLimiter(config, line => Log(store.LimiterLogPath, line), (active, waiting) => WriteState(store.LimiterStatePath, active, waiting));
-            var run = limiter.RunAsync(cts.Token);
-            await WaitBound(limiter, run, cts.Token);
+            var config = settings.HomeEnabled ? SocksLimiterConfig.Parse(json) : null;
+            await using var limiter = config != null ? new SocksLimiter(config, line => Log(store.LimiterLogPath, line), (active, waiting) => WriteState(store.LimiterStatePath, active, waiting)) : null;
+            var run = limiter?.RunAsync(cts.Token) ?? Task.Delay(Timeout.Infinite, cts.Token);
+            if (limiter != null) await WaitBound(limiter, run, cts.Token);
             var kernel = MihomoKernel.Resolve(settings.MihomoPath);
             MihomoKernel.EnsureExecutable(kernel);
             var test = await RunMihomo(kernel, store, ["-f", store.YamlPath, "-t"], cts.Token);
@@ -50,6 +50,7 @@ static class MihomoDaemon
             WritePid(store.MihomoPidPath, mihomo.Id);
             Log(store.ServiceLogPath, $"INFO mihomo pid {mihomo.Id} http {settings.HttpPort} kernel {kernel}");
             await ApplySavedSelectors(store, settings, mihomo, cts.Token);
+            store.SaveRunning(settings);
             try
             {
                 var exit = WaitExit(mihomo, cts.Token);
@@ -295,6 +296,9 @@ sealed class ProbeSession : IAsyncDisposable
     public static Task<ProbeSession> StartExitAsync(ClashProxyStore store, ClashProxySettings settings) =>
         StartAsync(store, settings, "probe-exit", DialerProxyBuilder.BuildExitProbe,
             (names, i) => names[i], DialerProxyBuilder.ExitTestUrl);
+    public static Task<ProbeSession> StartDevelopmentAsync(ClashProxyStore store, ClashProxySettings settings) =>
+        StartAsync(store, settings, "probe-development", DialerProxyBuilder.BuildExitProbe,
+            (names, i) => names[i], DialerProxyBuilder.DevelopmentTestUrl);
 
     private static async Task<ProbeSession> StartAsync(
         ClashProxyStore store,

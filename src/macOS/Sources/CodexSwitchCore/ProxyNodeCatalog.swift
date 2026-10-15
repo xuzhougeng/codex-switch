@@ -12,7 +12,7 @@ public struct ProxyNodeCatalog: Sendable {
         positions = Dictionary(uniqueKeysWithValues: names.enumerated().map { ($0.element, $0.offset) })
     }
 
-    public func candidates(for route: ProxyRoute) -> [String] { route == .relay ? names : exitNames }
+    public func candidates(for route: ProxyRoute) -> [String] { route == .exit ? exitNames : names }
 
     public func visibleNodes(route: ProxyRoute, search: String, delays: [String: Int]) -> [String] {
         let candidates = candidates(for: route)

@@ -70,6 +70,46 @@ final class ProxyRuntimeIntegrationTests: XCTestCase {
             throw error
         }
     }
+    func testRulesApplyWithoutRestartAndInvalidDraftKeepsRunningRules() async throws {
+        let (store, runtime, base) = try fixture()
+        do {
+            let started = try await runtime.start(base)
+            var settings = base
+            settings.routing.customRules = [RoutingRule(value: "example.com", target: .reject)]
+            _ = try await runtime.applyRules(settings)
+            let applied = try await runtime.status()
+            XCTAssertEqual(applied.mihomoPid, started.mihomoPid)
+            let active = try await runtime.runningSettings()
+            XCTAssertEqual(active.routing, settings.routing)
+            let api = ClashAPI(controller: settings.controller)
+            let (data, _) = try await ProxyHTTP.session().data(from: api.url(["rules"]))
+            let rules = try XCTUnwrap((JSONSerialization.jsonObject(with: data) as? [String: Any])?["rules"] as? [[String: Any]])
+            XCTAssertEqual(rules.first?["payload"] as? String, "example.com")
+            XCTAssertEqual(rules.first?["proxy"] as? String, "REJECT")
+            _ = try await runtime.select(settings, name: "Japan", route: .development)
+            let manual = try await api.group(DialerProxyBuilder.developmentGroup)
+            XCTAssertEqual(manual.now, "Japan")
+            _ = try await runtime.select(settings, name: DialerProxyBuilder.developmentAutomaticGroup, route: .development)
+            let automatic = try await api.group(DialerProxyBuilder.developmentGroup)
+            XCTAssertEqual(automatic.now, DialerProxyBuilder.developmentAutomaticGroup)
+            settings.routing.customRules[0].value = "invalid\nrule"
+            do { _ = try await runtime.applyRules(settings); XCTFail("Invalid draft was applied") } catch { }
+            let retained = try await runtime.runningSettings()
+            XCTAssertEqual(retained.routing, active.routing)
+            let saved = try await store.load()
+            XCTAssertEqual(saved.routing, active.routing)
+            let final = try await runtime.status()
+            XCTAssertTrue(final.running)
+            XCTAssertEqual(final.mihomoPid, started.mihomoPid)
+            try await runtime.stop()
+            try FileManager.default.removeItem(at: store.home)
+        } catch {
+            try? await runtime.stop()
+            try? FileManager.default.removeItem(at: store.home)
+            throw error
+        }
+    }
+
     func testHomeLimiterAndIsolatedProbes() async throws {
         let (store, runtime, base) = try fixture()
         var settings = base
@@ -96,6 +136,68 @@ final class ProxyRuntimeIntegrationTests: XCTestCase {
             try FileManager.default.removeItem(at: store.home)
         } catch {
             try? await runtime.stop()
+            try? FileManager.default.removeItem(at: store.home)
+            throw error
+        }
+    }
+
+    func testGitHubFallbackSkipsFailedNodesAndServesBrowserAssets() async throws {
+        let (store, _, base) = try fixture()
+        try FileManager.default.createDirectory(at: store.home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let portsURL = store.home.appendingPathComponent("mock-ports.json")
+        let script = try XCTUnwrap(Bundle.module.url(forResource: "mock-socks", withExtension: "py"))
+        let server = try ProxyProcess.launch(ProxyProcess.resolve("", names: ["python3"]), [script.path, portsURL.path],
+                                            cwd: store.home, log: store.home.appendingPathComponent("mock.log"))
+        var kernel: Process?
+        do {
+            var ports: [String: Int] = [:]
+            for _ in 0..<100 {
+                if let data = try? Data(contentsOf: portsURL), let value = try? JSONDecoder().decode([String: Int].self, from: data) {
+                    ports = value; break
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            let webPort = try XCTUnwrap(ports["web"])
+            let failed = "- {name: HK-broken, type: socks5, server: 127.0.0.1, port: 1}\n"
+            let healthy = "- {name: HK-healthy, type: socks5, server: 127.0.0.1, port: \(webPort)}\n"
+            let exit = "- {name: Japan, type: socks5, server: 127.0.0.1, port: \(webPort)}\n"
+            let cases = [(failed + healthy + exit, "HK-healthy"), (failed + exit, "exit-group"), (exit, "exit-group")]
+            for (index, scenario) in cases.enumerated() {
+                let directory = store.home.appendingPathComponent("case-\(index)")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                var settings = base
+                settings.relayYaml = scenario.0; settings.selectedExit = "Japan"; settings.proxyOtherSites = false
+                // Use the same GitHub host over plain HTTP so the local fixture needs no TLS certificate.
+                let yaml = try DialerProxyBuilder.build(store.input(settings)).yaml
+                    .replacingOccurrences(of: "url: https://github.com", with: "url: http://github.com")
+                let config = directory.appendingPathComponent("test.yaml")
+                try yaml.write(to: config, atomically: true, encoding: .utf8)
+                let process = try ProxyProcess.launch(settings.mihomoPath, ["-d", directory.path, "-f", config.path],
+                                                     cwd: directory, log: directory.appendingPathComponent("mihomo.log"))
+                kernel = process
+                let api = ClashAPI(controller: settings.controller)
+                var selected: String?
+                for _ in 0..<100 {
+                    selected = try? await api.group(DialerProxyBuilder.developmentAutomaticGroup).now
+                    if selected == scenario.1 { break }
+                    try await Task.sleep(for: .milliseconds(50))
+                }
+                XCTAssertEqual(selected, scenario.1)
+                let selection = try await api.group(DialerProxyBuilder.developmentGroup)
+                XCTAssertEqual(selection.now, DialerProxyBuilder.developmentAutomaticGroup)
+                for host in ["github.com", "github.githubassets.com"] {
+                    let response = try await ProxyProcess.run("/usr/bin/curl", ["--noproxy", "", "--proxy",
+                        "http://127.0.0.1:\(settings.httpPort)", "--max-time", "3", "--fail", "--silent", "--show-error", "http://\(host)/"])
+                    XCTAssertEqual(response, "mock github")
+                }
+                await ProxyProcess.terminate(process)
+                kernel = nil
+            }
+            await ProxyProcess.terminate(server)
+            try FileManager.default.removeItem(at: store.home)
+        } catch {
+            if let kernel { await ProxyProcess.terminate(kernel) }
+            await ProxyProcess.terminate(server)
             try? FileManager.default.removeItem(at: store.home)
             throw error
         }

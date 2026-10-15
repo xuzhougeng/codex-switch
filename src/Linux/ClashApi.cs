@@ -57,6 +57,14 @@ static class ClashApi
         var text = await response.Content.ReadAsStringAsync(cancellationToken);
         throw new InvalidOperationException(failure + "：" + (string.IsNullOrWhiteSpace(text) ? response.StatusCode.ToString() : text));
     }
+    public static async Task ReloadAsync(string controller, string yaml, CancellationToken ct)
+    {
+        using var http = Client();
+        http.Timeout = TimeSpan.FromSeconds(15);
+        using var body = new StringContent(JsonSerializer.Serialize(new { payload = yaml }), Encoding.UTF8, "application/json");
+        using var response = await http.PutAsync(Base(controller) + "/configs?force=true", body, ct);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException("规则应用失败：" + response.StatusCode);
+    }
 
     public static async Task<(long Up, long Down, int Count)> TrafficAsync(string controller, CancellationToken cancellationToken)
     {

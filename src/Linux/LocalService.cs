@@ -42,6 +42,7 @@ sealed class LocalService
 
     public ClashProxyStatus Restart(ClashProxySettings settings)
     {
+        Service.Check(settings);
         Stop();
         return Start(settings);
     }

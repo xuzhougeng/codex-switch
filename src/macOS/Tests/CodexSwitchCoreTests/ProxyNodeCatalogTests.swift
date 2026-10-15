@@ -7,6 +7,7 @@ final class ProxyNodeCatalogTests: XCTestCase {
             .map { "- name: '\($0)'" }.joined(separator: "\n"))
         XCTAssertEqual(catalog.names, ["HK 01", "Japan", "US A", "US B", "Canada"])
         XCTAssertEqual(catalog.candidates(for: .exit), ["Japan", "US A", "US B", "Canada"])
+        XCTAssertEqual(catalog.candidates(for: .development), catalog.names)
         XCTAssertEqual(catalog.visibleNodes(route: .relay, search: "", delays: [:]), catalog.names)
         let delays = ["Japan": -1, "US A": 20, "US B": 20, "Canada": 0]
         XCTAssertEqual(catalog.visibleNodes(route: .exit, search: "", delays: delays), ["Canada", "US A", "US B", "Japan"])

@@ -23,7 +23,11 @@ public sealed record DialerProxyInput(
     bool AllowLan = true,
     string SelectedRelay = "",
     string ExitGroup = "exit-group",
-    string SelectedExit = "");
+    string SelectedExit = "",
+    bool UseHomeProxy = true,
+    bool ProxyOtherSites = false,
+    RoutingConfiguration? Routing = null,
+    string SelectedDevelopment = "");
 
 public sealed record DialerProxyFiles(string Yaml, string LimiterJson, string LimiterPython);
 
@@ -71,6 +75,8 @@ public static class DialerProxyBuilder
 
     public static DialerProxyFiles Build(DialerProxyInput input)
     {
+        var routing = input.Routing ?? new RoutingConfiguration();
+        routing.Validate(input.UseHomeProxy);
         var relay = NormalizeRelayYaml(input.RelayYaml);
         var names = ExtractRelayNames(relay);
         if (names.Count == 0) throw new InvalidOperationException("还没有中转节点。请先导入订阅，再从订阅里选择。");
@@ -81,10 +87,10 @@ public static class DialerProxyBuilder
         var hk = new List<string>();
         foreach (var name in names)
             if (IsHongKong(name)) hk.Add(name);
-        hk.Add("DIRECT");
+        hk.Add(input.ExitGroup);
         var homeServer = (input.HomeServer ?? "").Trim();
         var homePort = (input.HomePort ?? "").Trim();
-        if (homeServer.Length == 0 || homePort.Length == 0)
+        if (input.UseHomeProxy && (homeServer.Length == 0 || !int.TryParse(homePort, out var hp) || hp is < 1 or > 65535))
             throw new InvalidOperationException("请填写美国家宽 SOCKS5 的地址和端口。");
 
         var listen = SplitHostPort(input.LimiterListen, "127.0.0.1", "1994");
@@ -92,6 +98,9 @@ public static class DialerProxyBuilder
         var group = string.IsNullOrWhiteSpace(input.RelayGroup) ? "relay-group" : input.RelayGroup.Trim();
         var exit = string.IsNullOrWhiteSpace(input.ExitGroup) ? "exit-group" : input.ExitGroup.Trim();
         var target = string.IsNullOrWhiteSpace(input.TargetName) ? "target-socks5" : input.TargetName.Trim();
+        var reserved = new[] { group, exit, target, HkGroup, HkAutomaticGroup };
+        if (reserved.Distinct().Count() != reserved.Length || reserved.Any(n => n.Contains(',') || n.Any(char.IsControl)) || names.Any(reserved.Contains))
+            throw new InvalidOperationException("代理组名称重复或与订阅节点冲突。");
         var loop = IPv4.IsMatch(homeServer)
             ? $"IP-CIDR,{homeServer}/32,{group},no-resolve"
             : $"DOMAIN,{homeServer},{group}";
@@ -110,12 +119,15 @@ public static class DialerProxyBuilder
         yaml.AppendLine("keep-alive-interval: 15");
         yaml.AppendLine("proxies:");
         yaml.AppendLine(IndentRelay(relay));
-        yaml.AppendLine($"  - name: {YamlScalar(target)}");
-        yaml.AppendLine("    type: socks5");
-        yaml.AppendLine($"    server: {listen.Host}");
-        yaml.AppendLine($"    port: {listen.Port}");
-        yaml.AppendLine("    udp: false");
-        yaml.AppendLine("    ip-version: ipv4");
+        if (input.UseHomeProxy)
+        {
+            yaml.AppendLine($"  - name: {YamlScalar(target)}");
+            yaml.AppendLine("    type: socks5");
+            yaml.AppendLine($"    server: {listen.Host}");
+            yaml.AppendLine($"    port: {listen.Port}");
+            yaml.AppendLine("    udp: false");
+            yaml.AppendLine("    ip-version: ipv4");
+        }
         yaml.AppendLine("proxy-groups:");
         yaml.AppendLine($"  - name: {YamlScalar(group)}");
         yaml.AppendLine("    type: select");
@@ -125,18 +137,30 @@ public static class DialerProxyBuilder
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
         foreach (var name in exits) yaml.AppendLine($"      - {YamlScalar(name)}");
+        yaml.AppendLine($"  - name: {HkAutomaticGroup}");
+        yaml.AppendLine("    type: fallback");
+        yaml.AppendLine($"    url: {DevelopmentTestUrl}");
+        yaml.AppendLine("    interval: 300");
+        yaml.AppendLine("    timeout: 5000");
+        yaml.AppendLine("    max-failed-times: 1");
+        yaml.AppendLine("    proxies:");
+        foreach (var name in hk) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine($"  - name: {HkGroup}");
         yaml.AppendLine("    type: select");
         yaml.AppendLine("    proxies:");
-        foreach (var name in hk) yaml.AppendLine($"      - {YamlScalar(name)}");
+        foreach (var name in Prefer(new[] { HkAutomaticGroup }.Concat(names).ToArray(), input.SelectedDevelopment)) yaml.AppendLine($"      - {YamlScalar(name)}");
         yaml.AppendLine("rules:");
-        yaml.AppendLine($"  - {loop}");
-        foreach (var rule in ExitHosts) yaml.AppendLine($"  - {rule},{exit}");
-        foreach (var rule in AnthropicHome) yaml.AppendLine($"  - {rule},{target}");
-        foreach (var rule in OtherAi) yaml.AppendLine($"  - {rule},{exit}");
-        foreach (var rule in HongKongOk) yaml.AppendLine($"  - {rule},{HkGroup}");
+        if (input.UseHomeProxy) yaml.AppendLine($"  - {loop}");
+        foreach (var rule in routing.CustomRules.Where(r => r.Enabled)) yaml.AppendLine("  - " + Quoted(rule.Validated().ClashLine(input)));
+        var aiTarget = RoutingTargets.Policy(routing.Ai, input);
+        var homeTarget = RoutingTargets.Policy(routing.AnthropicTarget(input.UseHomeProxy), input);
+        var developmentTarget = RoutingTargets.Policy(routing.Development, input);
+        foreach (var rule in ExitHosts) yaml.AppendLine($"  - {rule},{aiTarget}");
+        foreach (var rule in AnthropicHome) yaml.AppendLine($"  - {rule},{homeTarget}");
+        foreach (var rule in OtherAi) yaml.AppendLine($"  - {rule},{aiTarget}");
+        foreach (var rule in HongKongOk) yaml.AppendLine($"  - {rule},{developmentTarget}");
         foreach (var rule in BypassDirect) yaml.AppendLine($"  - {rule},DIRECT");
-        yaml.AppendLine("  - MATCH,DIRECT");
+        yaml.AppendLine("  - MATCH," + (input.ProxyOtherSites ? exit : "DIRECT"));
 
         var limiter = new Dictionary<string, object>
         {
@@ -210,6 +234,8 @@ public static class DialerProxyBuilder
 
     public const string ExitTestUrl = "https://downloads.claude.ai";
     public const string HkGroup = "hk-group";
+    public const string HkAutomaticGroup = "hk-auto";
+    public const string DevelopmentTestUrl = "https://github.com";
 
     // Hong Kong is not on the OpenAI or Anthropic supported lists, and Gemini's API list omits it too.
     // A node is Hong Kong when its label says so. "HK" must be its own token, so a name like "checkpoint" is left alone.
@@ -290,13 +316,14 @@ public static class DialerProxyBuilder
         "DOMAIN,copilot-proxy.githubusercontent.com",
         "DOMAIN-SUFFIX,githubcopilot.com"
     ];
-    // Not an AI exit. Hong Kong or a direct connection are both acceptable.
+    // Development traffic prefers healthy Hong Kong nodes, then the selected single-hop exit.
     private static readonly string[] HongKongOk =
     [
         "DOMAIN-SUFFIX,docker.io",
         "DOMAIN,api.github.com",
         "DOMAIN-SUFFIX,github.com",
         "DOMAIN-SUFFIX,githubusercontent.com",
+        "DOMAIN-SUFFIX,githubassets.com",
         "DOMAIN-SUFFIX,github.io"
     ];
     private static readonly string[] BypassDirect =
@@ -319,9 +346,17 @@ public static class DialerProxyBuilder
         var relay = (settings.SelectedRelay ?? "").Trim();
         var exit = (settings.SelectedExit ?? "").Trim();
         if (exit.Length == 0 || IsHongKong(exit)) exit = IsHongKong(relay) ? "" : relay;
+        var names = ExtractRelayNames(settings.RelayYaml);
+        if (names.Count > 0)
+        {
+            relay = Preferred(names, relay, "");
+            var candidates = WithoutHongKong(names);
+            exit = Preferred(candidates.Count > 0 ? candidates : names, settings.SelectedExit, relay);
+        }
         var list = new List<(string Group, string Name)>();
         if (relay.Length > 0) list.Add((relayGroup, relay));
         if (exit.Length > 0) list.Add((exitGroup, exit));
+        if (names.Count > 0) list.Add((HkGroup, names.Contains(settings.SelectedDevelopment) ? settings.SelectedDevelopment : HkAutomaticGroup));
         return list;
     }
 

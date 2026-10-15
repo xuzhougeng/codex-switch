@@ -100,19 +100,54 @@ public actor ClashProxyRuntime {
     }
     public func select(_ settings: ClashProxySettings, name: String, route: ProxyRoute) async throws -> String {
         let names = DialerProxyBuilder.extractRelayNames(settings.relayYaml)
-        guard names.contains(name), route != .exit || !DialerProxyBuilder.isHongKong(name) else { throw StoreError("不能选择这个节点。") }
+        let automatic = route == .development && name == DialerProxyBuilder.developmentAutomaticGroup
+        guard automatic || names.contains(name), route != .exit || !DialerProxyBuilder.isHongKong(name) else { throw StoreError("不能选择这个节点。") }
         var updated = settings
-        if route == .relay { updated.selectedRelay = name } else { updated.selectedExit = name }
+        switch route {
+        case .relay: updated.selectedRelay = name
+        case .exit: updated.selectedExit = name
+        case .development: updated.selectedDevelopment = automatic ? "" : name
+        }
         try await store.save(updated)
         guard try await status().running else { return "已保存，启动后生效。" }
         let active = try await runningSettings()
         do {
-            let group = route == .relay ? active.relayGroup : active.exitGroup
+            let group = route == .relay ? active.relayGroup : route == .exit ? active.exitGroup : DialerProxyBuilder.developmentGroup
             try await ClashAPI(controller: active.controller).select(group: group, name: name)
-            return "已切换到 \(name)"
+            return automatic ? "开发出口已启用自动回退。" : "已切换到 \(name)"
         } catch {
             throw StoreError("选择已保存，但未切换运行中的服务。请点击重启应用配置。\n" + error.localizedDescription)
         }
+    }
+    public func applyRules(_ settings: ClashProxySettings) async throws -> String {
+        guard try await status().running else {
+            try settings.routing.validate(useHomeProxy: settings.useHomeProxy)
+            try await store.save(settings)
+            return "规则已保存，启动代理后生效。"
+        }
+        // Only routing is reloaded here; port and SOCKS changes still use the explicit restart action.
+        var active = try await runningSettings()
+        guard SocksRuntimeConfiguration(active) == SocksRuntimeConfiguration(settings) else {
+            throw StoreError("家宽出口配置已更改，请先重启代理，再应用分流规则。")
+        }
+        active.routing = settings.routing; active.proxyOtherSites = settings.proxyOtherSites
+        active.selectedDevelopment = settings.selectedDevelopment
+        let api = ClashAPI(controller: active.controller)
+        active.selectedRelay = (try? await api.group(active.relayGroup).now) ?? active.selectedRelay
+        active.selectedExit = (try? await api.group(active.exitGroup).now) ?? active.selectedExit
+        let names = DialerProxyBuilder.extractRelayNames(active.relayYaml)
+        if !names.contains(active.selectedDevelopment) { active.selectedDevelopment = "" }
+        let files = try DialerProxyBuilder.build(store.input(active))
+        _ = try await MihomoKernel.check(active, store: store)
+        try await store.save(settings)
+        try await api.reload(yaml: files.yaml)
+        _ = try await store.materialize(active)
+        try await store.saveRunningSettings(active)
+        try await api.select(group: active.relayGroup, name: active.selectedRelay)
+        try await api.select(group: active.exitGroup, name: active.selectedExit)
+        try await api.select(group: DialerProxyBuilder.developmentGroup,
+                             name: active.selectedDevelopment.isEmpty ? DialerProxyBuilder.developmentAutomaticGroup : active.selectedDevelopment)
+        return "分流规则已保存并应用。"
     }
     public static func launchAgentData(executable: String, store: ClashProxyStore) throws -> Data {
         let plist: [String: Any] = [
@@ -216,7 +251,8 @@ public actor ClashProxyRuntime {
             let exits = DialerProxyBuilder.withoutHongKong(names)
             for (group, name) in [
                 (settings.relayGroup, DialerProxyBuilder.preferred(names, settings.selectedRelay)),
-                (settings.exitGroup, DialerProxyBuilder.preferred(exits.isEmpty ? names : exits, settings.selectedExit, settings.selectedRelay))
+                (settings.exitGroup, DialerProxyBuilder.preferred(exits.isEmpty ? names : exits, settings.selectedExit, settings.selectedRelay)),
+                (DialerProxyBuilder.developmentGroup, names.contains(settings.selectedDevelopment) ? settings.selectedDevelopment : DialerProxyBuilder.developmentAutomaticGroup)
             ] { try await api.select(group: group, name: name) }
             let limiterPort = try LocalEndpoint(settings.limiterListen).port
             guard ProxyProcess.listening(settings.httpPort), !settings.useHomeProxy || ProxyProcess.listening(limiterPort) else {

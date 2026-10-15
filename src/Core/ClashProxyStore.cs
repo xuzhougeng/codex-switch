@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CodexSwitch.Core;
 
@@ -14,6 +15,13 @@ public sealed class ClashProxySettings
     public string SubscriptionUrl { get; set; } = "";
     public string SelectedRelay { get; set; } = "";
     public string SelectedExit { get; set; } = "";
+    public string SelectedDevelopment { get; set; } = "";
+    public bool ProxyOtherSites { get; set; }
+    public bool? UseHomeProxy { get; set; }
+    [JsonIgnore] public bool HomeEnabled => UseHomeProxy ?? !string.IsNullOrWhiteSpace(HomeServer);
+    public RoutingConfiguration Routing { get; set; } = new();
+    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalSettings { get; set; }
+    public ClashProxySettings Copy() => JsonSerializer.Deserialize<ClashProxySettings>(JsonSerializer.Serialize(this))!;
     public string RelayYaml { get; set; } = "";
     public string HomeServer { get; set; } = "";
     public string HomePort { get; set; } = "1080";
@@ -42,6 +50,7 @@ public sealed class ClashProxyStore
     public string ServicePidPath => Path.Combine(WorkDirectory, "service.pid");
     public string ServiceLogPath => Path.Combine(WorkDirectory, "service.log");
     public string LimiterStatePath => Path.Combine(WorkDirectory, "limiter.state.json");
+    public string RunningSettingsPath => Path.Combine(WorkDirectory, "running.json");
 
     public ClashProxyStore(string? home = null) => Home = Path.GetFullPath(home ??
         Environment.GetEnvironmentVariable("CODEX_HOME") ??
@@ -109,6 +118,14 @@ public sealed class ClashProxyStore
         File.Move(temp, SettingsPath, true);
         TryRestrict(SettingsPath);
     }
+    public ClashProxySettings RunningSettings() => File.Exists(RunningSettingsPath)
+        ? JsonSerializer.Deserialize<ClashProxySettings>(File.ReadAllText(RunningSettingsPath), Json) ?? Load() : Load();
+    public void SaveRunning(ClashProxySettings settings)
+    {
+        Directory.CreateDirectory(WorkDirectory);
+        Write(RunningSettingsPath, JsonSerializer.Serialize(settings, Json));
+        TryRestrict(RunningSettingsPath);
+    }
 
     public DialerProxyFiles Materialize(ClashProxySettings settings)
     {
@@ -151,13 +168,18 @@ public sealed class ClashProxyStore
         allowLan,
         settings.SelectedRelay,
         settings.ExitGroup,
-        settings.SelectedExit);
+        settings.SelectedExit,
+        settings.HomeEnabled,
+        settings.ProxyOtherSites,
+        settings.Routing,
+        settings.SelectedDevelopment);
 
     private static void Write(string path, string text)
     {
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
         File.WriteAllText(temp, text);
         File.Move(temp, path, true);
+        TryRestrict(path);
     }
 
     private static void TryRestrict(string path)

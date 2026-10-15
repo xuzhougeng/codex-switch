@@ -1,9 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_VERSION="$(cat "$ROOT/VERSION")"
 cd "$ROOT/src/macOS"
 SWIFT_ARGS=()
 if [ -n "${CODEX_SWITCH_BUILD_PATH:-}" ]; then SWIFT_ARGS+=(--scratch-path "$CODEX_SWITCH_BUILD_PATH"); fi
+if [ -n "${MIHOMO_BINARY:-}" ]; then
+  export CODEX_SWITCH_TEST_KERNEL="$MIHOMO_BINARY"
+  export CODEX_SWITCH_TEST_APP="$(swift build --show-bin-path "${SWIFT_ARGS[@]}")/CodexSwitch"
+fi
 swift test "${SWIFT_ARGS[@]}"
 swift build -c release "${SWIFT_ARGS[@]}"
 BIN="$(swift build -c release --show-bin-path "${SWIFT_ARGS[@]}")"
@@ -31,7 +36,7 @@ for SIZE in 16 32 128 256 512; do
   sips -z "$DOUBLE" "$DOUBLE" "$ROOT/assets/app-icon.png" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/CodexSwitch.icns"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -40,7 +45,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Codex Switch</string>
   <key>CFBundleIconFile</key><string>CodexSwitch</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.3.5</string>
+  <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>

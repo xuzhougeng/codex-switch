@@ -1,6 +1,8 @@
 import Foundation
 
 public struct DialerProxyInput: Sendable {
+    public var routing: RoutingConfiguration
+    public var selectedDevelopment: String
     public var proxyOtherSites: Bool
     public var useHomeProxy: Bool
     public var selectedRelay: String
@@ -24,7 +26,9 @@ public struct DialerProxyInput: Sendable {
                 relayGroup: String = "relay-group", targetName: String = "target-socks5", httpPort: Int = 1990, socksPort: Int = 1991,
                 controller: String = "127.0.0.1:1993", limiterListen: String = "127.0.0.1:1994", maxConcurrent: Int = 8,
                 dialIntervalMs: Int = 250, queueWaitS: Int = 8, selectedRelay: String = "",
-                exitGroup: String = "exit-group", selectedExit: String = "", useHomeProxy: Bool = true, proxyOtherSites: Bool = false) {
+                exitGroup: String = "exit-group", selectedExit: String = "", useHomeProxy: Bool = true, proxyOtherSites: Bool = false,
+                routing: RoutingConfiguration = RoutingConfiguration(), selectedDevelopment: String = "") {
+        self.routing = routing; self.selectedDevelopment = selectedDevelopment
         self.proxyOtherSites = proxyOtherSites
         self.useHomeProxy = useHomeProxy
         self.selectedRelay = selectedRelay; self.selectedExit = selectedExit; self.exitGroup = exitGroup
@@ -44,6 +48,9 @@ public struct DialerProxyFiles: Sendable {
 }
 
 public enum DialerProxyBuilder {
+    public static let developmentGroup = "hk-group"
+    public static let developmentAutomaticGroup = "hk-auto"
+    public static let developmentTestURL = "https://github.com"
     public static func extractRelayNames(_ yaml: String) -> [String] {
         let lines = yaml.components(separatedBy: "\n")
         let listIndent = lines.filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("- ") }
@@ -129,14 +136,24 @@ public enum DialerProxyBuilder {
         for name in prefer(names, input.selectedRelay) { yaml += "      - \(scalar(name))\n" }
         yaml += "  - name: \(scalar(input.exitGroup))\n    type: select\n    proxies:\n"
         for name in prefer(ai, preferred(ai, input.selectedExit, input.selectedRelay)) { yaml += "      - \(scalar(name))\n" }
-        yaml += "  - name: hk-group\n    type: select\n    proxies:\n"
+        // GitHub must not stay pinned to the first imported Hong Kong node when it fails.
+        // Keep Hong Kong preferred, then fall back to the user's selected single-hop exit.
+        yaml += "  - name: \(developmentAutomaticGroup)\n    type: fallback\n    url: \(developmentTestURL)\n    interval: 300\n    timeout: 5000\n    max-failed-times: 1\n    proxies:\n"
         for name in hk { yaml += "      - \(scalar(name))\n" }
-        if hk.isEmpty && input.proxyOtherSites { yaml += "      - \(scalar(input.exitGroup))\n" }
-        yaml += "      - DIRECT\nrules:\n"
+        yaml += "      - \(scalar(input.exitGroup))\n"
+        yaml += "  - name: \(developmentGroup)\n    type: select\n    proxies:\n"
+        for name in prefer([developmentAutomaticGroup] + names, input.selectedDevelopment) { yaml += "      - \(scalar(name))\n" }
+        yaml += "rules:\n"
         if input.useHomeProxy { yaml += "  - \(loop)\n" }
-        yaml += "  - DOMAIN,downloads.claude.ai,\(input.exitGroup)\n"
+        for rule in input.routing.customRules where rule.enabled {
+            yaml += "  - \(quoted(try rule.validated().clashLine(input)))\n"
+        }
+        let aiTarget = input.routing.ai.policy(input)
+        let anthropicTarget = input.routing.anthropicTarget(useHomeProxy: input.useHomeProxy).policy(input)
+        let developmentTarget = input.routing.development.policy(input)
+        yaml += "  - DOMAIN,downloads.claude.ai,\(aiTarget)\n"
         for rule in ["DOMAIN-SUFFIX,anthropic.com", "DOMAIN-SUFFIX,claude.ai", "DOMAIN-SUFFIX,claude.com", "DOMAIN-SUFFIX,claudeusercontent.com"] {
-            yaml += "  - \(rule),\(input.useHomeProxy ? target : input.exitGroup)\n"
+            yaml += "  - \(rule),\(anthropicTarget)\n"
         }
         for rule in ["DOMAIN-SUFFIX,openai.com", "DOMAIN-SUFFIX,chatgpt.com", "DOMAIN-SUFFIX,oaistatic.com", "DOMAIN-SUFFIX,oaiusercontent.com",
                      "DOMAIN-SUFFIX,sora.com", "DOMAIN-SUFFIX,chat.com", "DOMAIN-SUFFIX,ai.com", "DOMAIN-SUFFIX,gemini.google.com",
@@ -145,10 +162,10 @@ public enum DialerProxyBuilder {
                      "DOMAIN-SUFFIX,notebooklm.google.com", "DOMAIN-SUFFIX,notebooklm.google", "DOMAIN-SUFFIX,bard.google.com",
                      "DOMAIN-SUFFIX,x.ai", "DOMAIN-SUFFIX,grok.com", "DOMAIN-SUFFIX,cursor.sh", "DOMAIN-SUFFIX,cursor.com", "DOMAIN-SUFFIX,cursorapi.com",
                      "DOMAIN,copilot-proxy.githubusercontent.com", "DOMAIN-SUFFIX,githubcopilot.com"] {
-            yaml += "  - \(rule),\(input.exitGroup)\n"
+            yaml += "  - \(rule),\(aiTarget)\n"
         }
-        for rule in ["DOMAIN-SUFFIX,docker.io", "DOMAIN,api.github.com", "DOMAIN-SUFFIX,github.com", "DOMAIN-SUFFIX,githubusercontent.com", "DOMAIN-SUFFIX,github.io"] {
-            yaml += "  - \(rule),hk-group\n"
+        for rule in ["DOMAIN-SUFFIX,docker.io", "DOMAIN,api.github.com", "DOMAIN-SUFFIX,github.com", "DOMAIN-SUFFIX,githubusercontent.com", "DOMAIN-SUFFIX,githubassets.com", "DOMAIN-SUFFIX,github.io"] {
+            yaml += "  - \(rule),\(developmentTarget)\n"
         }
         for rule in ["DOMAIN-SUFFIX,apple-relay.apple.com", "DOMAIN-SUFFIX,apple-relay.fastly-edge.com", "DOMAIN-SUFFIX,apple-relay.cloudflare.com", "DOMAIN-SUFFIX,guzzoni.apple.com"] {
             yaml += "  - \(rule),DIRECT\n"
@@ -218,6 +235,7 @@ public enum DialerProxyBuilder {
     }
 
     public static func validate(_ input: DialerProxyInput) throws {
+        try input.routing.validate(useHomeProxy: input.useHomeProxy)
         guard (1...65535).contains(input.httpPort), (1...65535).contains(input.socksPort),
               ( !input.useHomeProxy || Int(input.homePort).map { (1...65535).contains($0) } == true ) else {
             throw StoreError("端口需要是 1 到 65535 的数字。")
@@ -231,7 +249,7 @@ public enum DialerProxyBuilder {
             throw StoreError("并发数和排队秒数必须大于 0，拨号间隔不能为负。")
         }
         let names = extractRelayNames(input.relayYaml)
-        let reserved = [input.relayGroup, input.exitGroup, input.targetName, "hk-group"]
+        let reserved = [input.relayGroup, input.exitGroup, input.targetName, developmentGroup, developmentAutomaticGroup]
         guard Set(reserved).count == reserved.count, reserved.allSatisfy({ !$0.isEmpty && !$0.contains(",") && !$0.contains("\n") }),
               !names.contains(where: { reserved.contains($0) || ["DIRECT", "REJECT"].contains($0) }) else {
             throw StoreError("代理组名称为空、重复或与订阅节点冲突。")

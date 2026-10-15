@@ -8,6 +8,10 @@ public struct ProxyStatusSnapshot: Equatable, Sendable {
     public var connections: ProxyConnections?
     public var liveRelay = ""
     public var liveExit = ""
+    public var liveDevelopment = ""
+    public var automaticDevelopment = ""
+    public var routing = RoutingConfiguration()
+    public var proxyOtherSites = false
     public var pace = ""
     public var socksConfiguration = SocksRuntimeConfiguration()
     public init() {}
@@ -26,6 +30,7 @@ public actor ProxyStatusReader {
         result.state = try await runtime.status()
         let active = try await runtime.runningSettings()
         result.socksConfiguration = SocksRuntimeConfiguration(active)
+        result.routing = active.routing; result.proxyOtherSites = active.proxyOtherSites
         result.systemRecovery = await system.hasBackup
         result.systemProxy = await system.isEnabled(port: active.httpPort)
         result.bootEnabled = await runtime.bootEnabled
@@ -33,9 +38,13 @@ public actor ProxyStatusReader {
             let api = ClashAPI(controller: active.controller)
             async let relay = try? api.group(active.relayGroup)
             async let exit = try? api.group(active.exitGroup)
+            async let development = try? api.group(DialerProxyBuilder.developmentGroup)
+            async let automatic = try? api.group(DialerProxyBuilder.developmentAutomaticGroup)
             async let connections = try? api.connections()
             result.liveRelay = await relay?.now ?? ""
             result.liveExit = await exit?.now ?? ""
+            result.liveDevelopment = await development?.now ?? ""
+            result.automaticDevelopment = await automatic?.now ?? ""
             result.connections = await connections
             if let data = try? Data(contentsOf: store.limiterStateURL),
                let values = try? JSONDecoder().decode([String: Int].self, from: data) {

@@ -43,7 +43,7 @@ public sealed class MihomoService
         {
             try
             {
-                WaitListen(LimiterPort(settings), "本机限流", pid);
+                if (settings.HomeEnabled) WaitListen(LimiterPort(settings), "本机限流", pid);
                 WaitListen(settings.HttpPort, "mihomo", pid);
             }
             catch
@@ -63,11 +63,12 @@ public sealed class MihomoService
             if (pid is int value) host.Stop(value);
             try { File.Delete(path); } catch (IOException) { }
         }
+        try { File.Delete(store.RunningSettingsPath); } catch (IOException) { }
     }
 
     public ClashProxyStatus Status()
     {
-        var settings = File.Exists(store.SettingsPath) ? store.Load() : new ClashProxySettings();
+        var settings = File.Exists(store.RunningSettingsPath) ? store.RunningSettings() : store.Load();
         var servicePid = ReadPid(store.ServicePidPath);
         var mihomoPid = ReadPid(store.MihomoPidPath);
         var serviceUp = servicePid is int sp && host.IsRunning(sp);
@@ -77,8 +78,8 @@ public sealed class MihomoService
         var limiterUp = host.IsListening("127.0.0.1", limiterPort);
         var state = ReadState();
         var stateText = state is null ? "" : $"  活动 {state.Value.Active}  等待 {state.Value.Waiting}";
-        if (serviceUp && (!RequireListen || (httpUp && limiterUp)))
-            return new(true, $"运行中  HTTP 127.0.0.1:{settings.HttpPort}  限流 127.0.0.1:{limiterPort}  一跳 :{settings.SocksPort}{stateText}", mihomoPid, servicePid);
+        if (serviceUp && (!RequireListen || (httpUp && (!settings.HomeEnabled || limiterUp))))
+            return new(true, $"运行中  HTTP 127.0.0.1:{settings.HttpPort}" + (settings.HomeEnabled ? $"  限流 127.0.0.1:{limiterPort}  一跳 :{settings.SocksPort}{stateText}" : "  单跳代理"), mihomoPid, servicePid);
         if (serviceUp || mihomoUp)
             return new(false, "进程在，端口未就绪。查看 " + store.WorkDirectory + " 里的日志。" + stateText, mihomoPid, servicePid);
         if (httpUp)

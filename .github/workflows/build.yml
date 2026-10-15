@@ -29,7 +29,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Download and verify bundled mihomo
+        run: bash scripts/fetch-mihomo-macos.sh
       - name: Test and package SwiftUI
+        env:
+          MIHOMO_BINARY: ${{ github.workspace }}/dist/mihomo-macos/mihomo
+          MIHOMO_LICENSE: ${{ github.workspace }}/src/Linux/kernel/LICENSE
         run: bash scripts/build-macos.sh
       - name: Archive app preserving permissions
         run: ditto -c -k --sequesterRsrc --keepParent "dist/macos/Codex Switch.app" dist/macos/CodexSwitch-macOS.zip
@@ -39,15 +44,23 @@ jobs:
           path: dist/macos/CodexSwitch-macOS.zip
 
   linux:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
       - name: Test and publish Linux TUI
-        run: bash scripts/build-linux.sh
+        run: bash scripts/build-linux.sh ${{ matrix.arch }}
       - uses: actions/upload-artifact@v4
         with:
-          name: codex-switch-linux-x64
-          path: dist/linux-x64/
+          name: codex-switch-linux-${{ matrix.arch }}
+          path: dist/linux-${{ matrix.arch }}/

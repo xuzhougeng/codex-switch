@@ -16,6 +16,7 @@
     <Content Include="kernel/linux-x64/mihomo" Link="kernel/linux-x64/mihomo" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="('$(RuntimeIdentifier)' == 'linux-x64' Or '$(RuntimeIdentifier)' == '') And Exists('kernel/linux-x64/mihomo')" />
     <Content Include="kernel/linux-arm64/mihomo" Link="kernel/linux-arm64/mihomo" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Condition="('$(RuntimeIdentifier)' == 'linux-arm64' Or '$(RuntimeIdentifier)' == '') And Exists('kernel/linux-arm64/mihomo')" />
     <Content Include="kernel/SOURCE.txt" Link="kernel/SOURCE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="kernel/LICENSE" Link="kernel/LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="kernel/VERSION" Link="kernel/VERSION" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <EmbeddedResource Include="shell/function.sh" />
   </ItemGroup>

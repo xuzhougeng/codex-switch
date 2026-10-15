@@ -54,6 +54,10 @@ public struct ClashAPI: Sendable {
     public func select(group: String, name: String) async throws {
         _ = try await request(["proxies", group], method: "PUT", body: JSONEncoder().encode(["name": name]))
     }
+    public func reload(yaml: String) async throws {
+        _ = try await request(["configs"], method: "PUT", body: JSONEncoder().encode(["payload": yaml]),
+                              query: [URLQueryItem(name: "force", value: "true")], timeout: 15)
+    }
     public func connections() async throws -> ProxyConnections {
         try JSONDecoder().decode(ProxyConnections.self, from: await request(["connections"]))
     }
@@ -71,14 +75,14 @@ public struct ClashAPI: Sendable {
     }
 }
 
-public enum ProxyRoute: String, Sendable, CaseIterable { case relay, exit }
+public enum ProxyRoute: String, Sendable, CaseIterable { case exit, development, relay }
 
 public enum ProxyProbe {
     /// A separate kernel and cache ensure measuring a node never switches live traffic.
     public static func run(store: ClashProxyStore, settings: ClashProxySettings, route: ProxyRoute,
                            only: String? = nil, progress: @escaping @Sendable (String, Int) async -> Void) async throws -> [String: Int] {
         let all = DialerProxyBuilder.extractRelayNames(settings.relayYaml)
-        let candidates = route == .relay ? all : DialerProxyBuilder.withoutHongKong(all)
+        let candidates = route == .exit ? DialerProxyBuilder.withoutHongKong(all) : all
         let names = only.map { candidates.contains($0) ? [$0] : [] } ?? candidates
         guard !names.isEmpty else { throw StoreError(route == .exit ? "订阅中没有非香港节点。" : "订阅中没有节点。") }
         let kernel = try MihomoKernel.resolve(settings, store: store)
@@ -105,7 +109,8 @@ public enum ProxyProbe {
                     try await Task.sleep(for: .milliseconds(100))
                 }
             }
-            let target = route == .relay ? "http://www.gstatic.com/generate_204" : DialerProxyBuilder.exitTestURL
+            let target = route == .relay ? "http://www.gstatic.com/generate_204" :
+                route == .development ? DialerProxyBuilder.developmentTestURL : DialerProxyBuilder.exitTestURL
             let results = try await withThrowingTaskGroup(of: (String, Int).self) { group in
                 var iterator = names.makeIterator()
                 func submit(_ name: String) {
