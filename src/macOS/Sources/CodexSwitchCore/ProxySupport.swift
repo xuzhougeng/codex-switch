@@ -216,8 +216,22 @@ enum ProxyProcess {
     }
 }
 
+/// One parsed log row; a line without a timestamp continues the row above it.
+public struct LogLine: Identifiable, Equatable, Sendable {
+    public let index: Int
+    public let time: String
+    public let level: String
+    public let message: String
+    public var id: Int { index }
+}
+
 public enum ProxyLog {
     private static let problemPattern = try! NSRegularExpression(pattern: #"(?i)\b(warn(ing)?|error|fatal)\b"#)
+    // mihomo logfmt and our own "HH:mm:ss LEVEL msg" lines, the same two shapes LogTail.cs parses on Linux.
+    private static let kernel = try! NSRegularExpression(pattern: #"^time="[^"]*T(\d\d:\d\d:\d\d)[^"]*" level=(\w+) msg="(.*)"$"#)
+    private static let ours = try! NSRegularExpression(pattern: #"^(\d\d:\d\d:\d\d) ([A-Z]+) ?(.*)$"#)
+    private static let sourcePrefix = try! NSRegularExpression(pattern: #"127\.0\.0\.1:\d+ --> "#)
+
     public static func tail(_ url: URL, problemsOnly: Bool = false) -> String {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "暂无日志。" }
         defer { try? handle.close() }
@@ -230,5 +244,57 @@ public enum ProxyLog {
         } : lines
         let text = filtered.suffix(300).joined(separator: "\n")
         return text.isEmpty ? "暂无匹配日志。" : text
+    }
+
+    /// Structured rows from the end of the file, newest last, capped at 500 lines.
+    public static func entries(_ url: URL) -> [LogLine] {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 262_144 ? size - 262_144 : 0)
+        let data = (try? handle.readToEnd()) ?? Data()
+        let lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
+        var result: [LogLine] = []
+        for (offset, raw) in lines.suffix(500).enumerated() where !raw.isEmpty {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            let range = NSRange(line.startIndex..., in: line)
+            if let match = kernel.firstMatch(in: line, range: range) {
+                let message = unescape(text(line, match.range(at: 3)))
+                result.append(LogLine(index: offset, time: text(line, match.range(at: 1)),
+                                      level: level(text(line, match.range(at: 2))), message: tidy(message)))
+            } else if let match = ours.firstMatch(in: line, range: range) {
+                result.append(LogLine(index: offset, time: text(line, match.range(at: 1)),
+                                      level: level(text(line, match.range(at: 2))), message: text(line, match.range(at: 3))))
+            } else if !result.isEmpty {
+                let last = result.removeLast()
+                result.append(LogLine(index: last.index, time: last.time, level: last.level, message: last.message + "\n" + line))
+            } else {
+                result.append(LogLine(index: offset, time: "", level: "", message: line))
+            }
+        }
+        return result
+    }
+
+    private static func text(_ line: String, _ range: NSRange) -> String {
+        Range(range, in: line).map { String(line[$0]) } ?? ""
+    }
+
+    private static func unescape(_ message: String) -> String {
+        message.replacingOccurrences(of: #"\\(["\\])"#, with: "$1", options: .regularExpression)
+    }
+
+    /// Display only: drop the loopback client prefix mihomo prints on every connection line.
+    private static func tidy(_ message: String) -> String {
+        sourcePrefix.stringByReplacingMatches(in: message, range: NSRange(message.startIndex..., in: message),
+                                              withTemplate: "")
+    }
+
+    private static func level(_ value: String) -> String {
+        switch value.uppercased() {
+        case "WARNING": return "WARN"
+        case "FATAL", "PANIC": return "ERROR"
+        case let other: return other
+        }
     }
 }

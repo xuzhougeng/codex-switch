@@ -6,6 +6,7 @@ public struct ProxyStatusSnapshot: Equatable, Sendable {
     public var systemRecovery = false
     public var bootEnabled = false
     public var connections: ProxyConnections?
+    public var traffic = TrafficSnapshot()
     public var liveRelay = ""
     public var liveExit = ""
     public var liveDevelopment = ""
@@ -22,8 +23,12 @@ public actor ProxyStatusReader {
     private let runtime: ClashProxyRuntime
     private let system: MacSystemProxy
     private let store: ClashProxyStore
+    private var tracker = ConnectionTracker()
     public init(runtime: ClashProxyRuntime, system: MacSystemProxy, store: ClashProxyStore) {
         self.runtime = runtime; self.system = system; self.store = store
+    }
+    public func clearTraffic() {
+        tracker.clear()
     }
     public func read() async throws -> ProxyStatusSnapshot {
         var result = ProxyStatusSnapshot()
@@ -46,10 +51,17 @@ public actor ProxyStatusReader {
             result.liveDevelopment = await development?.now ?? ""
             result.automaticDevelopment = await automatic?.now ?? ""
             result.connections = await connections
+            if let connections = await connections {
+                result.traffic = tracker.ingest(connections, at: Date())
+            }
             if let data = try? Data(contentsOf: store.limiterStateURL),
                let values = try? JSONDecoder().decode([String: Int].self, from: data) {
                 result.pace = "活动 \(values["active"] ?? 0) · 排队 \(values["waiting"] ?? 0)"
             }
+        } else {
+            // Stopped: finalize live connections so the session totals keep their last bytes.
+            tracker.markStopped()
+            result.traffic = tracker.snapshot()
         }
         try Task.checkCancellation()
         return result

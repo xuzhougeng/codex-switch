@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         .target(name: "CodexSwitchCore", resources: [.copy("Resources/socks-limiter.py")]),
         .executableTarget(name: "CodexSwitch", dependencies: ["CodexSwitchCore"]),
-        .testTarget(name: "CodexSwitchCoreTests", dependencies: ["CodexSwitchCore"], resources: [.copy("Fixtures/mock-socks.py")]),
+        .testTarget(name: "CodexSwitchCoreTests", dependencies: ["CodexSwitchCore"], resources: [.copy("Fixtures/mock-socks.py"), .copy("Fixtures/connections.json")]),
         .testTarget(name: "CodexSwitchTests", dependencies: ["CodexSwitch", "CodexSwitchCore"])
     ]
 )

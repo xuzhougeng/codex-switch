@@ -1,0 +1,46 @@
+{
+  "downloadTotal": 1048576,
+  "uploadTotal": 131072,
+  "connections": [
+    {
+      "id": "0f4c4a2e-9c1d-4a6b-8e2f-3d5c7b9a1e01",
+      "upload": 1024,
+      "download": 4096,
+      "start": "2026-10-14T08:15:30.123456+08:00",
+      "chains": ["AI工具", "US / #1"],
+      "rule": "DomainSuffix",
+      "rulePayload": "openai.com",
+      "metadata": {
+        "network": "tcp",
+        "type": "HTTP",
+        "sourceIP": "127.0.0.1",
+        "destinationIP": "104.18.6.55",
+        "sourcePort": "52311",
+        "destinationPort": "443",
+        "host": "api.openai.com",
+        "process": "codex",
+        "processPath": "/opt/homebrew/bin/codex"
+      }
+    },
+    {
+      "id": "0f4c4a2e-9c1d-4a6b-8e2f-3d5c7b9a1e02",
+      "upload": 0,
+      "download": 0,
+      "start": "2026-10-14T08:15:31.000000+08:00",
+      "chains": ["DIRECT"],
+      "rule": "IP-CIDR",
+      "rulePayload": "192.168.0.0/16",
+      "metadata": {
+        "network": "udp",
+        "type": "Socks5",
+        "sourceIP": "127.0.0.1",
+        "destinationIP": "192.168.1.10",
+        "sourcePort": "52312",
+        "destinationPort": "5353",
+        "host": "",
+        "process": "",
+        "processPath": ""
+      }
+    }
+  ]
+}

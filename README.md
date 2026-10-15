@@ -2,14 +2,14 @@
 
 本地 Codex 账号管理器。Windows 使用 **WinUI 3 / C#**，macOS 使用 **SwiftUI / Swift**，Linux 使用终端界面管理 mihomo。原 PowerShell 命令行继续保留。
 
-当前版本 **0.4.1**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.4.1)
+当前版本 **0.4.2**：[下载](https://github.com/xuzhougeng/codex-switch/releases/tag/v0.4.2)
 
 | 包 | 平台 |
 | --- | --- |
-| `CodexSwitch-0.4.1-windows-x64.zip` | Windows x64 |
-| `CodexSwitch-0.4.1-macos-arm64.zip` | macOS Apple Silicon，含 mihomo |
-| `CodexSwitch-0.4.1-linux-x64.tar.gz` | Linux x64，含 mihomo |
-| `CodexSwitch-0.4.1-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
+| `CodexSwitch-0.4.2-windows-x64.zip` | Windows x64 |
+| `CodexSwitch-0.4.2-macos-arm64.zip` | macOS Apple Silicon，含 mihomo |
+| `CodexSwitch-0.4.2-linux-x64.tar.gz` | Linux x64，含 mihomo |
+| `CodexSwitch-0.4.2-linux-arm64.tar.gz` | Linux arm64，含 mihomo |
 
 原生版采用松绿色账号卡片、紧凑侧栏和账号库，提供搜索、保存、切换、清空、移除、异步浏览器登录和取消登录；跟随系统浅色/深色主题。Windows 窄窗口自动收起侧栏文字，macOS 保留原生窗口、确认框及 Command-R 快捷键。清空和移除操作放在对应账号的更多菜单中。
 
@@ -95,7 +95,9 @@ macOS App 可以独立管理 mihomo，无需启动 Clash Verge。打开后默认
 - 可预览和复制实际生成的 Clash 规则。「保存并应用」先校验再重新载入运行中的 mihomo，无需重新开启系统代理。端口与家宽服务的修改仍需重启代理。
 - 在「设置 → SOCKS5 出口」保存、编辑和切换多个代理；支持链接导入、手动填写及密码显隐。旧家宽配置自动保留为一个配置。每个配置可经当前中转节点测试完整链路，显示成功延迟或失败原因；运行中的代理需重启后应用 SOCKS5 配置变更。
 - 可选家宽双跳沿用 Linux TUI 的规则与限流，开启后需要 Python 3。第一跳测完整链路，第一代理测单跳；支持单节点、全部测速、自动选择最快和运行中切换。测速使用隔离的临时内核。
-- 设置页提供内核下载/更新、配置检查、自定义路径、端口与限流、Shell 命令安装，以及 launchd 用户登录自启动；连接和日志页显示实时状态。
+- 设置页提供内核下载/更新、配置检查、自定义路径、端口与限流、Shell 命令安装，以及 launchd 用户登录自启动。
+- 「流量」页回答「流量去了哪」：顶部显示实时速率、活动连接数与会话累计；连接列表展示每个目的地、命中规则、完整出口链路（末位出口高亮，直连与拦截区分着色）、来源进程、TCP / UDP、连接时长和单连接实时速率；可切换按目标域名或按出口节点聚合，查看每类目的地、每个出口各承载了多少流量；支持全部 / 代理 / 直连 / 拦截筛选与关键词搜索，右键可关闭单条连接。mihomo 只上报活动连接，连接关闭后的流量由 App 在本地结算并计入会话累计——代理重启或停止后累计仍可查看，可一键清空。
+- 「日志」页按级别着色显示 mihomo、服务、限流三个来源；mihomo 的连接记录会隐藏本机回环前缀并高亮命中的出口，支持关键词筛选与「仅警告和错误」，保留最近 500 行。
 - 登录自启动只启动后台代理；系统代理仍需单独开启。启用登录自启动前，请将 App 放在固定位置。
 - 构建时可通过 `MIHOMO_BINARY=/path/to/mihomo MIHOMO_LICENSE=/path/to/LICENSE bash scripts/build-macos.sh` 内置内核；未内置时可在 App 设置里下载官方内核。
 

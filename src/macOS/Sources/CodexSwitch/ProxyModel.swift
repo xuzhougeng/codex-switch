@@ -31,9 +31,10 @@ final class ProxyModel: ObservableObject {
                           || snapshot.automaticDevelopment.isEmpty)
     }
     var pace: String { snapshot.pace }
+    var traffic: TrafficSnapshot { snapshot.traffic }
     @Published var logSource = "mihomo"
     @Published var problemsOnly = false
-    @Published var logText = "暂无日志。"
+    @Published var logLines: [LogLine] = []
     @Published var search = "" {
         didSet { if oldValue != search { updateVisibleNodes(debounce: true) } }
     }
@@ -363,13 +364,25 @@ final class ProxyModel: ObservableObject {
             }
         }
     }
+    func closeConnection(_ id: String) {
+        run { [self] in
+            try await ClashAPI(controller: settings.controller).closeConnection(id: id)
+            return "连接已关闭。"
+        }
+    }
+    func clearTrafficStats() {
+        Task { [self] in
+            await statusReader.clearTraffic()
+            await refreshStatus()
+        }
+    }
     func refreshLog() {
         logTask?.cancel()
-        let url = logURL, filter = problemsOnly
+        let url = logURL
         logTask = Task {
-            let text = await Task.detached(priority: .utility) { ProxyLog.tail(url, problemsOnly: filter) }.value
+            let lines = await Task.detached(priority: .utility) { ProxyLog.entries(url) }.value
             guard !Task.isCancelled else { return }
-            if logText != text { logText = text }
+            if logLines != lines { logLines = lines }
         }
     }
     func readKernel() async {

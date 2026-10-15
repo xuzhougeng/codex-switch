@@ -6,13 +6,26 @@ public struct ProxyConnections: Decodable, Equatable, Sendable {
             public let host: String?
             public let destinationIP: String?
             public let network: String?
+            public let type: String?
+            public let sourceIP: String?
+            public let sourcePort: String?
+            public let destinationPort: String?
+            public let process: String?
+            public let processPath: String?
         }
         public let id: String
         public let metadata: Metadata
         public let upload: Int64?
         public let download: Int64?
         public let chains: [String]?
+        public let rule: String?
+        public let rulePayload: String?
+        public let start: String?
         public var destination: String { metadata.host.flatMap { $0.isEmpty ? nil : $0 } ?? metadata.destinationIP ?? "未知" }
+        /// The concrete exit: the last link of the chain (DIRECT / REJECT included).
+        public var exit: String { chains?.last ?? "" }
+        public var isDirect: Bool { exit == "DIRECT" }
+        public var isRejected: Bool { exit == "REJECT" }
     }
     public let uploadTotal: Int64
     public let downloadTotal: Int64
@@ -60,6 +73,9 @@ public struct ClashAPI: Sendable {
     }
     public func connections() async throws -> ProxyConnections {
         try JSONDecoder().decode(ProxyConnections.self, from: await request(["connections"]))
+    }
+    public func closeConnection(id: String) async throws {
+        _ = try await request(["connections", id], method: "DELETE")
     }
     public func delay(name: String, target: String, timeoutMs: Int = 5000) async throws -> Int {
         do {

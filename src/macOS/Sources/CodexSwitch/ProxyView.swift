@@ -10,13 +10,20 @@ struct ProxyView: View {
     @State private var showYAML = false
     @State private var yaml = ""
     @State private var showSubscription = false
+    @State private var trafficMode: TrafficMode = .connections
+    @State private var trafficScope: TrafficScope = .all
+    @State private var trafficSearch = ""
+    @State private var trafficByBytes = false
+    @State private var logSearch = ""
     private enum Tab: String, CaseIterable {
-        case nodes = "出口节点", rules = "分流规则", settings = "设置", activity = "连接", logs = "日志"
+        case nodes = "出口节点", rules = "分流规则", settings = "设置", activity = "流量", logs = "日志"
         var icon: String {
             switch self { case .nodes: return "square.grid.2x2"; case .rules: return "arrow.triangle.branch"; case .settings: return "slider.horizontal.3"
-            case .activity: return "waveform.path"; case .logs: return "terminal" }
+                case .activity: return "waveform.path"; case .logs: return "terminal" }
         }
     }
+    private enum TrafficMode: String, CaseIterable { case connections = "按连接", hosts = "按目标", exits = "按出口" }
+    private enum TrafficScope: String, CaseIterable { case all = "全部", proxy = "代理", direct = "直连", rejected = "拦截" }
     private let accent = SwitchPalette.accent
 
     var body: some View {
@@ -38,7 +45,8 @@ struct ProxyView: View {
         .task {
             await model.load()
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(3)) } catch { break }
+                // The traffic tab needs 1 s samples for live rates; other tabs poll calmly.
+                do { try await Task.sleep(for: .seconds(tab == .activity && model.state.running ? 1 : 3)) } catch { break }
                 if !model.busy {
                     await model.refreshStatus()
                     if tab == .logs { model.refreshLog() }
@@ -342,25 +350,212 @@ struct ProxyView: View {
         }.textFieldStyle(SwitchFieldStyle()).toggleStyle(.switch).controlSize(.small)
     }
     private var activity: some View {
-        card("运行详情") {
-            Text("mihomo PID：\(model.state.mihomoPid.map(String.init) ?? "—") · 限流 PID：\(model.state.limiterPid.map(String.init) ?? "—")")
-                .font(.caption.monospaced()).textSelection(.enabled)
-            if let connections = model.connections?.connections, !connections.isEmpty {
-                ForEach(connections.prefix(100)) { connection in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(connection.destination).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
-                            Text((connection.chains ?? []).joined(separator: " → ")).font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("↑ \(bytes(connection.upload ?? 0))  ↓ \(bytes(connection.download ?? 0))").font(.caption.monospacedDigit())
-                    }.padding(.vertical, 6)
+        let traffic = model.traffic
+        let hasHistory = traffic.sessionUp > 0 || traffic.sessionDown > 0 || !traffic.byHost.isEmpty
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 0) {
+                metric("实时速率", value: "↓ \(speed(traffic.rateDown)) · ↑ \(speed(traffic.rateUp))", icon: "bolt.horizontal")
+                metric("活动连接", value: "\(traffic.rows.count)", icon: "link")
+                metric("会话累计", value: "↓ \(bytes(traffic.sessionDown)) · ↑ \(bytes(traffic.sessionUp))", icon: "chart.bar.doc.horizontal")
+                if hasHistory {
+                    Button { model.clearTrafficStats() } label: { Image(systemName: "trash") }
+                        .buttonStyle(SwitchButtonStyle(kind: .quiet, compact: true))
+                        .help("清空会话统计").accessibilityLabel("清空会话统计")
+                        .padding(.trailing, 18)
                 }
-            } else {
-                SwitchEmptyState(icon: "waveform.path", title: "还没有活动连接", detail: model.state.running
-                    ? "应用开始使用代理后，连接会显示在这里。" : "启动代理后，在这里查看实时连接与流量。")
+            }.padding(.vertical, 11).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SwitchPalette.border) }
+            if !model.state.running && hasHistory {
+                Label("代理已停止，以下保留本次会话的累计流量。", systemImage: "clock.arrow.circlepath")
+                    .font(.caption).foregroundStyle(SwitchPalette.muted)
+            }
+            HStack(spacing: 10) {
+                Picker("视图", selection: $trafficMode) {
+                    ForEach(TrafficMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }.pickerStyle(.segmented).frame(width: 216)
+                if trafficMode == .connections {
+                    HStack(spacing: 3) {
+                        ForEach(TrafficScope.allCases, id: \.self) { scope in
+                            Button { trafficScope = scope } label: {
+                                Text(scope.rawValue).font(.system(size: 11, weight: .medium))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .foregroundStyle(trafficScope == scope ? accent : SwitchPalette.muted)
+                                    .background(trafficScope == scope ? SwitchPalette.surface : .clear, in: RoundedRectangle(cornerRadius: 6))
+                            }.buttonStyle(.plain).accessibilityAddTraits(trafficScope == scope ? [.isSelected] : [])
+                        }
+                    }.padding(3).background(SwitchPalette.inset, in: RoundedRectangle(cornerRadius: 8))
+                    Button { trafficByBytes.toggle() } label: {
+                        Label(trafficByBytes ? "流量最大" : "最近活动", systemImage: "arrow.up.arrow.down")
+                    }.buttonStyle(SwitchButtonStyle(compact: true))
+                }
+                Spacer(minLength: 8)
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(SwitchPalette.muted)
+                    TextField("搜索域名、规则或节点", text: $trafficSearch).textFieldStyle(.plain)
+                    if !trafficSearch.isEmpty {
+                        Button { trafficSearch = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(SwitchPalette.muted) }
+                            .buttonStyle(.plain).accessibilityLabel("清空搜索")
+                    }
+                }.font(.system(size: 12)).padding(9).frame(maxWidth: 280, alignment: .leading)
+                    .background(SwitchPalette.inset, in: RoundedRectangle(cornerRadius: 9))
+            }
+            card("运行详情") {
+                Text("mihomo PID：\(model.state.mihomoPid.map(String.init) ?? "—") · 限流 PID：\(model.state.limiterPid.map(String.init) ?? "—")")
+                    .font(.caption.monospaced()).foregroundStyle(SwitchPalette.muted).textSelection(.enabled)
+                if filteredRows.isEmpty && filteredHosts.isEmpty && filteredExits.isEmpty {
+                    SwitchEmptyState(icon: "waveform.path",
+                                     title: hasHistory ? "没有匹配的记录" : "还没有活动连接",
+                                     detail: hasHistory ? "换个关键词，或切换视图与过滤条件。"
+                                     : model.state.running ? "应用开始使用代理后，每条连接的目的地、命中规则与出口都会显示在这里。"
+                                     : "启动代理后，在这里查看实时连接、命中规则与流量去向。")
+                } else if trafficMode == .connections {
+                    LazyVStack(spacing: 6) { ForEach(trafficByBytes ? filteredRows.sorted { ($0.upload + $0.download) > ($1.upload + $1.download) } : filteredRows) { connectionRow($0) } }
+                } else if trafficMode == .hosts {
+                    LazyVStack(spacing: 6) { ForEach(filteredHosts) { hostRow($0) } }
+                } else {
+                    LazyVStack(spacing: 6) { ForEach(filteredExits) { exitRow($0) } }
+                }
             }
         }
+    }
+    private var filteredRows: [ConnectionRow] {
+        let query = trafficSearch.trimmingCharacters(in: .whitespaces)
+        return model.traffic.rows.filter { row in
+            let inScope: Bool
+            switch trafficScope {
+            case .all: inScope = true
+            case .proxy: inScope = !row.isDirect && !row.isRejected
+            case .direct: inScope = row.isDirect
+            case .rejected: inScope = row.isRejected
+            }
+            guard inScope else { return false }
+            guard !query.isEmpty else { return true }
+            return [row.host, row.rule, row.exit, row.process].contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+    private var filteredHosts: [HostAggregate] {
+        let query = trafficSearch.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return model.traffic.byHost }
+        return model.traffic.byHost.filter { item in
+            ([item.host, item.rule] + item.exits).contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+    private var filteredExits: [ExitAggregate] {
+        let query = trafficSearch.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return model.traffic.byExit }
+        return model.traffic.byExit.filter { item in
+            ([item.exit] + item.hosts).contains { $0.localizedCaseInsensitiveContains(query) }
+        }
+    }
+    private func connectionRow(_ row: ConnectionRow) -> some View {
+        HStack(spacing: 11) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(row.host + (row.destinationPort.isEmpty ? "" : ":" + row.destinationPort))
+                        .font(.system(size: 12, weight: .medium)).textSelection(.enabled)
+                    if !row.network.isEmpty {
+                        Text(row.network).font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5).padding(.vertical, 2).foregroundStyle(SwitchPalette.muted)
+                            .background(SwitchPalette.inset, in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    if !row.process.isEmpty {
+                        Text(row.process).font(.system(size: 10)).foregroundStyle(SwitchPalette.muted).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                HStack(spacing: 5) {
+                    if !row.rule.isEmpty { Text(row.rule) }
+                    if !row.chains.isEmpty || !row.exit.isEmpty {
+                        Text("·")
+                        chainText(row.chains.isEmpty ? [row.exit] : row.chains)
+                    }
+                }.font(.caption2).foregroundStyle(SwitchPalette.muted)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("↓ \(bytes(row.download))" + (row.rateDown > 0 ? " · \(speed(row.rateDown))" : ""))
+                Text("↑ \(bytes(row.upload))" + (row.rateUp > 0 ? " · \(speed(row.rateUp))" : ""))
+            }.font(.caption.monospacedDigit())
+            Text(duration(row.age)).font(.caption2).foregroundStyle(SwitchPalette.muted)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
+        .padding(.vertical, 9).padding(.horizontal, 12)
+        .background(SwitchPalette.inset.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+        .contextMenu {
+            Button { model.closeConnection(row.id) } label: { Label("关闭连接", systemImage: "xmark.circle") }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(row.host, forType: .string)
+            } label: { Label("拷贝域名", systemImage: "doc.on.doc") }
+        }
+    }
+    private func hostRow(_ item: HostAggregate) -> some View {
+        HStack(spacing: 11) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.host).font(.system(size: 12, weight: .medium)).textSelection(.enabled)
+                HStack(spacing: 5) {
+                    if !item.rule.isEmpty { Text(item.rule) }
+                    ForEach(item.exits.prefix(2), id: \.self) { exit in
+                        Text(exit).padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(exitTint(exit))
+                    }
+                    if item.exits.count > 2 { Text("+\(item.exits.count - 2)") }
+                }.font(.caption2).foregroundStyle(SwitchPalette.muted)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("\(item.opened) 条连接" + (item.active > 0 ? " · \(item.active) 活跃" : ""))
+                    .font(.caption2).foregroundStyle(SwitchPalette.muted)
+                Text("↓ \(bytes(item.download)) · ↑ \(bytes(item.upload))").font(.caption.monospacedDigit())
+            }
+        }
+        .padding(.vertical, 9).padding(.horizontal, 12)
+        .background(SwitchPalette.inset.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+        .contextMenu {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.host, forType: .string)
+            } label: { Label("拷贝域名", systemImage: "doc.on.doc") }
+        }
+    }
+    private func exitRow(_ item: ExitAggregate) -> some View {
+        HStack(spacing: 11) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.exit).font(.system(size: 12, weight: .semibold)).foregroundStyle(exitTint(item.exit)).textSelection(.enabled)
+                if !item.hosts.isEmpty {
+                    Text(item.hosts.joined(separator: "、")).font(.caption2).foregroundStyle(SwitchPalette.muted)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("\(item.opened) 条连接" + (item.active > 0 ? " · \(item.active) 活跃" : ""))
+                    .font(.caption2).foregroundStyle(SwitchPalette.muted)
+                Text("↓ \(bytes(item.download)) · ↑ \(bytes(item.upload))").font(.caption.monospacedDigit())
+            }
+        }
+        .padding(.vertical, 9).padding(.horizontal, 12)
+        .background(SwitchPalette.inset.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
+    }
+    /// The whole chain reads as one line; the exit (the concrete answer to "where did it go") stands out.
+    @ViewBuilder
+    private func chainText(_ chains: [String]) -> some View {
+        if chains.count > 1 {
+            Text(chains.dropLast().joined(separator: " → ") + " → ").foregroundColor(SwitchPalette.muted)
+            Text(chains.last!).foregroundColor(exitTint(chains.last!)).fontWeight(.semibold)
+        } else if let exit = chains.first {
+            Text(exit).foregroundColor(exitTint(exit)).fontWeight(.semibold)
+        }
+    }
+    private func exitTint(_ exit: String) -> Color {
+        exit == "REJECT" ? .orange : exit == "DIRECT" ? SwitchPalette.muted : accent
+    }
+    private func speed(_ bytesPerSecond: Int) -> String { bytes(Int64(bytesPerSecond)) + "/s" }
+    private func duration(_ interval: TimeInterval) -> String {
+        let seconds = Int(interval)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m\(String(format: "%02d", seconds % 60))s" }
+        return "\(seconds / 3600)h\(String(format: "%02d", (seconds % 3600) / 60))m"
     }
     private var logs: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -386,19 +581,29 @@ struct ProxyView: View {
                     Image(systemName: "terminal").font(.system(size: 11))
                     Text(model.logURL.lastPathComponent).font(.system(size: 10, design: .monospaced))
                     Spacer(minLength: 8)
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 10))
+                        TextField("筛选日志", text: $logSearch).textFieldStyle(.plain).frame(width: 120)
+                        if !logSearch.isEmpty {
+                            Button { logSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.plain).foregroundStyle(SwitchPalette.muted).accessibilityLabel("清空筛选")
+                        }
+                    }
                     Toggle("仅警告与错误", isOn: $model.problemsOnly).font(.system(size: 10)).toggleStyle(.switch).controlSize(.mini)
-                        .onChange(of: model.problemsOnly) { _ in model.refreshLog() }
                 }.foregroundStyle(SwitchPalette.muted).padding(.horizontal, 14).padding(.vertical, 11)
                     .overlay(alignment: .bottom) { Rectangle().fill(SwitchPalette.border).frame(height: 1) }
-                if model.logText.hasPrefix("暂无") {
-                    SwitchEmptyState(icon: model.problemsOnly ? "checkmark.shield" : "text.alignleft",
+                if filteredLogLines.isEmpty {
+                    SwitchEmptyState(icon: model.problemsOnly || !logSearch.isEmpty ? "checkmark.shield" : "text.alignleft",
                                      title: model.problemsOnly ? "暂无警告或错误" : "等待第一条日志",
-                                     detail: model.problemsOnly ? "当前日志中没有匹配的警告或错误。" : "服务运行后，日志会自动显示在这里。", compact: true)
+                                     detail: model.problemsOnly ? "当前日志中没有匹配的警告或错误。"
+                                     : logSearch.isEmpty ? "服务运行后，日志会自动显示在这里。" : "没有包含该关键词的日志。",
+                                     compact: true)
                 } else {
                     ScrollView([.horizontal, .vertical]) {
-                        Text(model.logText).font(.system(size: 11, design: .monospaced)).lineSpacing(5).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .topLeading).padding(14)
-                    }.frame(height: 240)
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(filteredLogLines) { line in logRow(line) }
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .topLeading)
+                    }.frame(height: 260)
                 }
             }.background(SwitchPalette.inset, in: RoundedRectangle(cornerRadius: 10))
                 .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(SwitchPalette.border) }
@@ -406,11 +611,40 @@ struct ProxyView: View {
                 Label(model.logURL.deletingLastPathComponent().path, systemImage: "folder")
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 Spacer(minLength: 12)
-                Text("最近 300 行").fixedSize()
+                Text("最近 500 行 · mihomo 行尾高亮命中出口").fixedSize()
             }.font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
         }.padding(20).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SwitchPalette.border) }
             .onAppear { model.refreshLog() }
+    }
+    private var filteredLogLines: [LogLine] {
+        let query = logSearch.trimmingCharacters(in: .whitespaces)
+        return model.logLines.filter { line in
+            if model.problemsOnly && line.level != "WARN" && line.level != "ERROR" { return false }
+            if !query.isEmpty && !line.message.localizedCaseInsensitiveContains(query) { return false }
+            return true
+        }
+    }
+    private func logRow(_ line: LogLine) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            if !line.time.isEmpty {
+                Text(line.time).frame(width: 54, alignment: .leading)
+            }
+            Text(line.level.isEmpty ? " " : line.level)
+                .foregroundStyle(line.level == "ERROR" ? .red : line.level == "WARN" ? .orange : SwitchPalette.muted)
+                .frame(width: 40, alignment: .leading)
+            messageText(line).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }.font(.system(size: 11, design: .monospaced))
+    }
+    /// mihomo connection lines end with "using 出口" — that exit is the routing answer, so highlight it.
+    private func messageText(_ line: LogLine) -> Text {
+        let message = line.message
+        if let range = message.range(of: " using ", options: .backwards) {
+            return Text(String(message[message.startIndex..<range.lowerBound])).foregroundColor(SwitchPalette.muted)
+                + Text(message[range.lowerBound...]).foregroundColor(accent).fontWeight(.semibold)
+        }
+        return Text(message).foregroundColor(line.level == "ERROR" ? .red : line.level == "WARN" ? .orange : .primary)
     }
     private func card<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         let icon: String = {
