@@ -93,12 +93,26 @@ static class RoutingChecks
         var url = "http://" + settings.Controller;
         try
         {
+            var ready = false;
             for (var i = 0; i < 100; i++)
             {
-                try { using var response = await http.GetAsync(url + "/version"); if (response.IsSuccessStatusCode) break; }
+                // The controller starts before mihomo finishes installing proxy groups.
+                try
+                {
+                    using var response = await http.GetAsync(url + "/proxies");
+                    if (response.IsSuccessStatusCode)
+                    {
+                        using var proxies = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                        var groups = proxies.RootElement.GetProperty("proxies");
+                        ready = groups.TryGetProperty(settings.RelayGroup, out _) && groups.TryGetProperty(settings.ExitGroup, out _);
+                        if (ready) break;
+                    }
+                }
                 catch (HttpRequestException) { }
+                if (process.HasExited) throw new InvalidOperationException("Test kernel exited during startup: " + await stderr);
                 await Task.Delay(50);
             }
+            if (!ready) throw new TimeoutException("Test kernel did not finish loading proxy groups.");
             var draft = settings.Copy();
             draft.Routing.CustomRules = [new RoutingRule { Value = "example.com", Target = "reject" }];
             await RoutingWorkflow.ApplyAsync(store, true, draft);
