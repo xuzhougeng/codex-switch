@@ -21,7 +21,7 @@ final class ConnectionTrackerTests: XCTestCase {
 
     func testRatesAndRowsFollowSuccessiveSnapshots() {
         var tracker = ConnectionTracker()
-        let first = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 1000, down: 5000, chains: ["AI工具", "US / #1"], process: "codex")], up: 2000, down: 10_000), at: base)
+        let first = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 1000, down: 5000, chains: ["US / #1", "AI工具"], process: "codex")], up: 2000, down: 10_000), at: base)
         XCTAssertEqual(first.rows.count, 1)
         XCTAssertEqual(first.rows[0].rateUp, 0)
         XCTAssertEqual(first.rows[0].exit, "US / #1")
@@ -29,7 +29,7 @@ final class ConnectionTrackerTests: XCTestCase {
         XCTAssertEqual(first.rows[0].rule, "DomainSuffix openai.com")
         XCTAssertTrue(first.rows[0].isDirect == false)
 
-        let second = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["AI工具", "US / #1"])], up: 3000, down: 20_000), at: base.addingTimeInterval(1))
+        let second = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["US / #1", "AI工具"])], up: 3000, down: 20_000), at: base.addingTimeInterval(1))
         XCTAssertEqual(second.rateUp, 1000)
         XCTAssertEqual(second.rateDown, 10_000)
         XCTAssertEqual(second.rows[0].rateUp, 1000)
@@ -39,7 +39,7 @@ final class ConnectionTrackerTests: XCTestCase {
 
     func testClosedConnectionIsFinalizedExactlyOnce() {
         var tracker = ConnectionTracker()
-        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["AI工具", "US / #1"])]), at: base)
+        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["US / #1", "AI工具"])]), at: base)
         let closed = tracker.ingest(snapshot([]), at: base.addingTimeInterval(1))
         XCTAssertEqual(closed.rows.count, 0)
         XCTAssertEqual(closed.sessionUp, 2000)
@@ -58,8 +58,8 @@ final class ConnectionTrackerTests: XCTestCase {
     func testHostAndExitAggregation() {
         var tracker = ConnectionTracker()
         let snapshot = snapshot([
-            connection("a", host: "api.openai.com", up: 100, down: 900, chains: ["AI工具", "节点一"]),
-            connection("b", host: "api.openai.com", up: 10, down: 90, chains: ["AI工具", "节点二"]),
+            connection("a", host: "api.openai.com", up: 100, down: 900, chains: ["节点一", "AI工具"]),
+            connection("b", host: "api.openai.com", up: 10, down: 90, chains: ["节点二", "AI工具"]),
             connection("c", host: "192.168.1.10", up: 1, down: 9, chains: ["DIRECT"], rule: "IP-CIDR", payload: "192.168.0.0/16")
         ])
         let traffic = tracker.ingest(snapshot, at: base)
@@ -81,9 +81,9 @@ final class ConnectionTrackerTests: XCTestCase {
 
     func testKernelRestartKeepsSessionTotals() {
         var tracker = ConnectionTracker()
-        _ = tracker.ingest(snapshot([connection("old", host: "api.openai.com", up: 2000, down: 15_000, chains: ["AI工具", "US / #1"])], up: 2500, down: 16_000), at: base)
+        _ = tracker.ingest(snapshot([connection("old", host: "api.openai.com", up: 2000, down: 15_000, chains: ["US / #1", "AI工具"])], up: 2500, down: 16_000), at: base)
         // Restart: every id is new and the kernel counters reset to smaller values.
-        let after = tracker.ingest(snapshot([connection("new", host: "github.com", up: 5, down: 50, chains: ["开发出口", "HK-1"])], up: 10, down: 100), at: base.addingTimeInterval(2))
+        let after = tracker.ingest(snapshot([connection("new", host: "github.com", up: 5, down: 50, chains: ["HK-1", "开发出口"])], up: 10, down: 100), at: base.addingTimeInterval(2))
         XCTAssertEqual(after.rateUp, 0)
         XCTAssertEqual(after.rateDown, 0)
         XCTAssertEqual(after.sessionUp, 2005)
@@ -93,7 +93,7 @@ final class ConnectionTrackerTests: XCTestCase {
 
     func testMarkStoppedFinalizesRowsAndKeepsHistory() {
         var tracker = ConnectionTracker()
-        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["AI工具", "US / #1"])]), at: base)
+        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["US / #1", "AI工具"])]), at: base)
         tracker.markStopped()
         let traffic = tracker.snapshot()
         XCTAssertEqual(traffic.rows.count, 0)
@@ -104,7 +104,7 @@ final class ConnectionTrackerTests: XCTestCase {
 
     func testClearResetsEverything() {
         var tracker = ConnectionTracker()
-        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["AI工具", "US / #1"])]), at: base)
+        _ = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 2000, down: 15_000, chains: ["US / #1", "AI工具"])]), at: base)
         tracker.clear()
         let traffic = tracker.ingest(snapshot([], up: 10, down: 10), at: base.addingTimeInterval(1))
         XCTAssertEqual(traffic.sessionUp, 0)
@@ -114,12 +114,31 @@ final class ConnectionTrackerTests: XCTestCase {
     func testHostRefinementAfterDNSDoesNotDoubleCount() {
         var tracker = ConnectionTracker()
         // First poll: only an IP is known. Second poll: the host resolved.
-        _ = tracker.ingest(snapshot([connection("a", host: "", up: 10, down: 10, chains: ["AI工具", "US / #1"])]), at: base)
-        let refined = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 20, down: 20, chains: ["AI工具", "US / #1"])]), at: base.addingTimeInterval(1))
+        _ = tracker.ingest(snapshot([connection("a", host: "", up: 10, down: 10, chains: ["US / #1", "AI工具"])]), at: base)
+        let refined = tracker.ingest(snapshot([connection("a", host: "api.openai.com", up: 20, down: 20, chains: ["US / #1", "AI工具"])]), at: base.addingTimeInterval(1))
         XCTAssertEqual(refined.byHost.count, 1)
         XCTAssertEqual(refined.byHost.first?.host, "api.openai.com")
         XCTAssertEqual(refined.byHost.first?.opened, 1)
         XCTAssertEqual(refined.sessionUp, 20)
+    }
+
+    func testProcessAggregationSkipsUnattributedConnections() {
+        var tracker = ConnectionTracker()
+        let snapshot = snapshot([
+            connection("a", host: "api.openai.com", up: 100, down: 900, chains: ["US / #1", "AI工具"], process: "codex"),
+            connection("b", host: "downloads.claude.ai", up: 10, down: 80, chains: ["US / #1", "AI工具"], process: "codex"),
+            connection("c", host: "github.com", up: 5, down: 50, chains: ["HK-1", "开发出口"], process: "claude"),
+            connection("d", host: "example.com", up: 999, down: 999, chains: ["DIRECT"])
+        ])
+        let traffic = tracker.ingest(snapshot, at: base)
+        // Ranked by session traffic: codex 1090 > claude 55; the unattributed connection is left out.
+        XCTAssertEqual(traffic.byProcess.map(\.process), ["codex", "claude"])
+        let codex = traffic.byProcess[0]
+        XCTAssertEqual(codex.opened, 2)
+        XCTAssertEqual(codex.active, 2)
+        XCTAssertEqual(codex.upload, 110)
+        XCTAssertEqual(codex.download, 980)
+        XCTAssertEqual(traffic.byProcess[1].opened, 1)
     }
 
     func testDecodeConnectionsFixture() throws {

@@ -369,6 +369,21 @@ struct ProxyView: View {
                 Label("代理已停止，以下保留本次会话的累计流量。", systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(SwitchPalette.muted)
             }
+            if !traffic.byHost.isEmpty || !traffic.byProcess.isEmpty || !traffic.byExit.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Top 3 · 会话累计").font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+                    HStack(alignment: .top, spacing: 0) {
+                        rankingColumn("网站", traffic.byHost.prefix(3).map { RankingItem(name: $0.host, up: $0.upload, down: $0.download) }, divider: true)
+                        // The macOS kernel cannot attribute processes; keep the layout two-column until it can.
+                        if !traffic.byProcess.isEmpty {
+                            rankingColumn("进程", traffic.byProcess.prefix(3).map { RankingItem(name: $0.process, up: $0.upload, down: $0.download) }, divider: true)
+                        }
+                        rankingColumn("节点", traffic.byExit.prefix(3).map { RankingItem(name: exitName($0.exit), up: $0.upload, down: $0.download) })
+                    }
+                }
+                .padding(.vertical, 13).background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(SwitchPalette.border) }
+            }
             HStack(spacing: 10) {
                 Picker("视图", selection: $trafficMode) {
                     ForEach(TrafficMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -495,7 +510,7 @@ struct ProxyView: View {
                 HStack(spacing: 5) {
                     if !item.rule.isEmpty { Text(item.rule) }
                     ForEach(item.exits.prefix(2), id: \.self) { exit in
-                        Text(exit).padding(.horizontal, 5).padding(.vertical, 2)
+                        Text(exitName(exit)).padding(.horizontal, 5).padding(.vertical, 2)
                             .background(SwitchPalette.surface, in: RoundedRectangle(cornerRadius: 4))
                             .foregroundStyle(exitTint(exit))
                     }
@@ -521,7 +536,7 @@ struct ProxyView: View {
     private func exitRow(_ item: ExitAggregate) -> some View {
         HStack(spacing: 11) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.exit).font(.system(size: 12, weight: .semibold)).foregroundStyle(exitTint(item.exit)).textSelection(.enabled)
+                Text(exitName(item.exit)).font(.system(size: 12, weight: .semibold)).foregroundStyle(exitTint(item.exit)).textSelection(.enabled)
                 if !item.hosts.isEmpty {
                     Text(item.hosts.joined(separator: "、")).font(.caption2).foregroundStyle(SwitchPalette.muted)
                         .lineLimit(1).truncationMode(.middle)
@@ -537,18 +552,49 @@ struct ProxyView: View {
         .padding(.vertical, 9).padding(.horizontal, 12)
         .background(SwitchPalette.inset.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
     }
-    /// The whole chain reads as one line; the exit (the concrete answer to "where did it go") stands out.
+    /// The whole chain reads as one line: group → … → node. mihomo reports innermost-first,
+    /// so reversing puts the concrete exit (CN6, DIRECT…) last, where it is highlighted.
     @ViewBuilder
     private func chainText(_ chains: [String]) -> some View {
-        if chains.count > 1 {
-            Text(chains.dropLast().joined(separator: " → ") + " → ").foregroundColor(SwitchPalette.muted)
-            Text(chains.last!).foregroundColor(exitTint(chains.last!)).fontWeight(.semibold)
-        } else if let exit = chains.first {
-            Text(exit).foregroundColor(exitTint(exit)).fontWeight(.semibold)
+        let ordered = chains.reversed()
+        if ordered.count > 1 {
+            Text(ordered.dropLast().joined(separator: " → ") + " → ").foregroundColor(SwitchPalette.muted)
+            Text(exitName(ordered.last!)).foregroundColor(exitTint(ordered.last!)).fontWeight(.semibold)
+        } else if let exit = ordered.first {
+            Text(exitName(exit)).foregroundColor(exitTint(exit)).fontWeight(.semibold)
         }
     }
+    /// The home dual-hop leg shows up as its proxy name; say what it means.
+    private func exitName(_ exit: String) -> String { exit == "target-socks5" ? "家宽双跳" : exit }
     private func exitTint(_ exit: String) -> Color {
         exit == "REJECT" ? .orange : exit == "DIRECT" ? SwitchPalette.muted : accent
+    }
+    private struct RankingItem: Identifiable {
+        let name: String
+        let up: Int64
+        let down: Int64
+        var id: String { name }
+    }
+    /// One ranked column of the Top 3 strip: name plus session traffic, biggest first.
+    private func rankingColumn(_ title: String, _ items: [RankingItem], divider: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 10)).foregroundStyle(SwitchPalette.muted)
+            if items.isEmpty {
+                Text("暂无数据").font(.system(size: 10)).foregroundStyle(SwitchPalette.muted.opacity(0.7))
+            } else {
+                ForEach(Array(items.enumerated()), id: \.element.id) { rank, item in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(rank + 1).  " + item.name).font(.system(size: 11, weight: .medium))
+                            .lineLimit(1).truncationMode(.middle)
+                        Text("↓ \(bytes(item.down)) · ↑ \(bytes(item.up))")
+                            .font(.caption2).monospacedDigit().foregroundStyle(SwitchPalette.muted)
+                    }
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
+            .overlay(alignment: .trailing) {
+                if divider { Rectangle().fill(SwitchPalette.border).frame(width: 1).padding(.vertical, 2) }
+            }
     }
     private func speed(_ bytesPerSecond: Int) -> String { bytes(Int64(bytesPerSecond)) + "/s" }
     private func duration(_ interval: TimeInterval) -> String {

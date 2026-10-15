@@ -7,7 +7,7 @@
       "upload": 1024,
       "download": 4096,
       "start": "2026-10-14T08:15:30.123456+08:00",
-      "chains": ["AI工具", "US / #1"],
+      "chains": ["US / #1", "AI工具"],
       "rule": "DomainSuffix",
       "rulePayload": "openai.com",
       "metadata": {

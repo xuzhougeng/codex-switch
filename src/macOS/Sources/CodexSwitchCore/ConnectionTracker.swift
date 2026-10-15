@@ -43,6 +43,16 @@ public struct ExitAggregate: Identifiable, Equatable, Sendable {
     public let hosts: [String]
 }
 
+/// Cumulative traffic for one local process, across every connection seen this session.
+public struct ProcessAggregate: Identifiable, Equatable, Sendable {
+    public var id: String { process }
+    public let process: String
+    public let opened: Int
+    public let active: Int
+    public let upload: Int64
+    public let download: Int64
+}
+
 public struct TrafficSnapshot: Equatable, Sendable {
     public var rateUp = 0
     public var rateDown = 0
@@ -51,6 +61,7 @@ public struct TrafficSnapshot: Equatable, Sendable {
     public var rows: [ConnectionRow] = []
     public var byHost: [HostAggregate] = []
     public var byExit: [ExitAggregate] = []
+    public var byProcess: [ProcessAggregate] = []
     public init() {}
 }
 
@@ -144,6 +155,8 @@ public struct ConnectionTracker: Sendable {
                 if upload != record.upload || download != record.download { record.lastActive = now }
                 // The host starts as an IP and fills in once DNS resolves; keep the refined value.
                 record.host = host
+                record.exit = exit
+                record.chains = connection.chains ?? []
                 record.upload = upload
                 record.download = download
                 record.closed = false
@@ -222,8 +235,10 @@ public struct ConnectionTracker: Sendable {
         result.rateDown = rateDown
         struct HostStats { var opened = 0; var active = 0; var upload: Int64 = 0; var download: Int64 = 0; var ruleTraffic: [String: Int64] = [:]; var exitTraffic: [String: Int64] = [:] }
         struct ExitStats { var opened = 0; var active = 0; var upload: Int64 = 0; var download: Int64 = 0; var hosts: [String: Int64] = [:] }
+        struct FlowStats { var opened = 0; var active = 0; var upload: Int64 = 0; var download: Int64 = 0 }
         var hosts: [String: HostStats] = [:]
         var exits: [String: ExitStats] = [:]
+        var processes: [String: FlowStats] = [:]
         for record in records.values {
             result.sessionUp += record.upload
             result.sessionDown += record.download
@@ -243,6 +258,15 @@ public struct ConnectionTracker: Sendable {
             if !record.closed { exit.active += 1 }
             exit.hosts[record.host, default: 0] += bytes
             exits[record.exit.isEmpty ? "未知" : record.exit] = exit
+            // The kernel cannot always attribute a connection to a process; unattributed ones stay out of the ranking.
+            if !record.process.isEmpty {
+                var process = processes[record.process, default: FlowStats()]
+                process.opened += 1
+                process.upload += record.upload
+                process.download += record.download
+                if !record.closed { process.active += 1 }
+                processes[record.process] = process
+            }
         }
         result.rows = records.filter { !$0.value.closed }.map { id, record in
             ConnectionRow(
@@ -265,6 +289,11 @@ public struct ConnectionTracker: Sendable {
                           hosts: stats.hosts.sorted { $0.value > $1.value }.prefix(3).map(\.key))
         }
         result.byExit.sort { ($0.upload + $0.download) > ($1.upload + $1.download) }
+        result.byProcess = processes.map { process, stats in
+            ProcessAggregate(process: process, opened: stats.opened, active: stats.active,
+                             upload: stats.upload, download: stats.download)
+        }
+        result.byProcess.sort { ($0.upload + $0.download) > ($1.upload + $1.download) }
         return result
     }
 }

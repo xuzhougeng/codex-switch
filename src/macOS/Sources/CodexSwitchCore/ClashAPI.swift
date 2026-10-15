@@ -22,8 +22,8 @@ public struct ProxyConnections: Decodable, Equatable, Sendable {
         public let rulePayload: String?
         public let start: String?
         public var destination: String { metadata.host.flatMap { $0.isEmpty ? nil : $0 } ?? metadata.destinationIP ?? "未知" }
-        /// The concrete exit: the last link of the chain (DIRECT / REJECT included).
-        public var exit: String { chains?.last ?? "" }
+        /// The concrete exit: mihomo reports chains innermost-first, so the node is the FIRST link.
+        public var exit: String { chains?.first ?? "" }
         public var isDirect: Bool { exit == "DIRECT" }
         public var isRejected: Bool { exit == "REJECT" }
     }
