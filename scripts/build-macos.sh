@@ -3,7 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_VERSION="$(cat "$ROOT/VERSION")"
 cd "$ROOT/src/macOS"
-SWIFT_ARGS=()
+# Keep this array nonempty: macOS Bash 3.2 treats an empty array as unset with -u.
+SWIFT_ARGS=(--package-path "$ROOT/src/macOS")
 if [ -n "${CODEX_SWITCH_BUILD_PATH:-}" ]; then SWIFT_ARGS+=(--scratch-path "$CODEX_SWITCH_BUILD_PATH"); fi
 if [ -n "${MIHOMO_BINARY:-}" ]; then
   export CODEX_SWITCH_TEST_KERNEL="$MIHOMO_BINARY"
